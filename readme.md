@@ -7,6 +7,9 @@ This project is a proof-of-concept web application that emulates the Grand Theft
 - **Guided setup:** GTA III is available today; later entries are marked "coming soon". The interface walks you through ripping, organising, and loading each station.
 - **Automatic folder scan:** Drop the WAV files into `web/sounds/gta/3/` and the app loads them automatically at runtime.
 - **Manual uploads welcome:** If you prefer, upload individual stations in the browser—filenames are validated so everything stays authentic.
+- **Missing file indicators:** Stations that are still waiting for their WAVs are greyed out with explicit filenames so you always know what to provide next.
+- **Real-time synchronisation:** The broadcast clock follows your real-world time-of-day. Switching stations or skipping forward/backward keeps every station aligned, just like the original engine.
+- **Offset controls & persistence:** Adjust or reset the shared offset to correct drift, and pick up where you left off thanks to `localStorage`.
 - **Real-time synchronisation:** The broadcast clock follows your real-world time-of-day. Switching stations or skipping forward/backward keeps every station aligned, just like the original engine.
 - **Offset controls & persistence:** Adjust or reset the shared offset to correct drift, and pick up where you left off thanks to `localStorage`.
 This project is a proof-of-concept web application that emulates the Grand Theft Auto III radio behaviour. Once you upload the original radio station audio from your copy of GTA III, the player keeps every station in sync with a shared broadcast clock, so swapping stations instantly resumes wherever the in-game schedule would be.
@@ -52,6 +55,7 @@ This project is a proof-of-concept web application that emulates the Grand Theft
            GAME.wav
    ```
 
+3. Start the web app and click **Scan GTA III folder**. The player will pick up any files it finds. Any station that remains grey after the scan will list the exact filename it is waiting for, and you can upload it manually via the provided inputs.
 3. Start the web app and click **Scan GTA III folder**. The player will pick up any files it finds. If a station is still missing you can upload it manually via the provided inputs.
 4. Upload the nine radio WAV files exactly as exported by the game (e.g. `HEAD.wav`, `RISE.wav`).
 5. Provide an MD5 manifest so the player can verify your files.

@@ -1,12 +1,6 @@
 const STORAGE_KEYS = {
   OFFSET: "gta-radio-time-offset",
   LAST_GAME: "gta-radio-last-game",
-import { md5FromArrayBuffer } from "./md5.js";
-
-const STORAGE_KEYS = {
-  OFFSET: "gta-radio-time-offset",
-  LAST_GAME: "gta-radio-last-game",
-  MANIFEST: "gta-radio-manifest",
 };
 
 const GTA3_STATIONS = [
@@ -23,17 +17,6 @@ const GTA3_STATIONS = [
 
 const GAME_LIBRARY_FOLDERS = {
   gta3: "sounds/gta/3",
-const DEFAULT_MANIFEST = {
-  id: "gta3",
-  version: 1,
-  stations: GTA3_STATIONS.reduce((acc, station) => {
-    acc[station.id] = {
-      fileName: station.fileName,
-      // Replace the placeholder string with the real MD5 hash from your legally ripped copy.
-      expectedMd5: "REPLACE_WITH_REAL_MD5",
-    };
-    return acc;
-  }, {}),
 };
 
 const GAMES = [
@@ -43,7 +26,6 @@ const GAMES = [
     status: "available",
     description:
       "Sync your GTA III radio stations with the original broadcast clock. Follow the guided setup below.",
-    description: "Upload the nine original radio station WAV files ripped from your copy of GTA III.",
     stations: GTA3_STATIONS,
   },
   { id: "vc", name: "Grand Theft Auto: Vice City", status: "soon" },
@@ -129,7 +111,6 @@ function selectGame(gameId) {
   const game = GAMES.find((g) => g.id === gameId);
   if (!game || game.status !== "available") return;
   state.selectedGame = game;
-  state.manifest = loadStoredManifest();
   localStorage.setItem(STORAGE_KEYS.LAST_GAME, game.id);
   renderStationManager();
   els.stationManager.hidden = false;
@@ -158,7 +139,7 @@ function renderStationManager() {
       <li>Press <strong>Scan GTA III folder</strong> to pull them in automatically, or upload individual files below.</li>
     </ol>
     <p class="info-text">
-      The filenames must stay exactly as the game shipped (HEAD.wav, CLASS.wav, RISE.wav, etc.). If a station is missing, the status message will point you to the fix.
+      The filenames must stay exactly as the game shipped (HEAD.wav, CLASS.wav, RISE.wav, etc.). Missing stations show in grey with a reminder of which file to add.
     </p>
     <div class="controls">
       <button id="scan-library">Scan GTA III folder</button>
@@ -174,26 +155,6 @@ function renderStationManager() {
 
   const resetButton = wrapper.querySelector("#reset-offset");
   resetButton?.addEventListener("click", () => {
-function renderStationManager() {
-  const wrapper = document.createElement("div");
-  wrapper.innerHTML = `
-    <h2>${state.selectedGame.name} stations</h2>
-    <p class="info-text">
-      Provide the original WAV files exactly as exported by the game. Each upload is validated against
-      an MD5 manifest to ensure it matches the untouched asset.
-    </p>
-    <div class="controls">
-      <button id="load-manifest">Load MD5 manifest</button>
-      <button id="reset-offset">Reset broadcast clock</button>
-      <span class="station-status" data-state="waiting" id="offset-readout">Offset: ${formatClock(state.offsetSeconds)}</span>
-    </div>
-  `;
-
-  const manifestButton = wrapper.querySelector("#load-manifest");
-  manifestButton.addEventListener("click", promptManifestUpload);
-
-  const resetButton = wrapper.querySelector("#reset-offset");
-  resetButton.addEventListener("click", () => {
     state.offsetSeconds = 0;
     saveOffset();
     updateOffsetReadout();
@@ -207,14 +168,13 @@ function renderStationManager() {
 
   for (const station of state.selectedGame.stations) {
     const item = document.createElement("div");
-    item.className = "station-item";
+    item.className = "station-item station-item--missing";
     item.dataset.stationId = station.id;
 
     const info = document.createElement("div");
     info.innerHTML = `
       <strong>${station.name}</strong>
-      <div class="station-status" data-state="waiting">Place <code>${station.fileName}</code> in <code>${folderDisplay}</code> or upload it below.</div>
-      <div class="station-status" data-state="waiting">Awaiting upload</div>
+      <div class="station-status" data-state="missing">File <code>${station.fileName}</code> expected in <code>${folderDisplay}</code>. Scan the folder or upload it below.</div>
     `;
 
     const fileInput = document.createElement("input");
@@ -234,8 +194,6 @@ function renderStationManager() {
   warning.innerHTML = `
     <strong>Reminder:</strong> Only use audio you legally ripped from a copy of the game you own. This simulator never uploads your files.
     For reference on timing, inspect the open-source <code>openrw</code> project, which recreates the same radio logic.
-    <strong>Important:</strong> This tool only works with audio you ripped yourself. Do not distribute copyrighted material.
-    For authentic timing information, compare against <code>openrw</code>'s radio implementation.
   `;
 
   wrapper.appendChild(warning);
@@ -259,9 +217,13 @@ async function scanLocalLibrary(folderPath) {
         updateStationStatus(station.id, "valid", fallback);
       } else {
         const guidance = folderPath
-          ? `Copy ${station.fileName} into ${folderDisplay} or upload it manually.`
-          : `Upload ${station.fileName} manually using the button below.`;
-        updateStationStatus(station.id, "error", `File not found. ${guidance}`);
+          ? `File <code>${station.fileName}</code> expected at <code>${folderDisplay}${station.fileName}</code> is missing.`
+          : `Upload <code>${station.fileName}</code> manually using the button below.`;
+        updateStationStatus(
+          station.id,
+          "missing",
+          `${guidance} You can upload it here once you rip it from the game.`
+        );
       }
     }
   }
@@ -271,7 +233,7 @@ async function scanLocalLibrary(folderPath) {
 }
 
 async function loadStationFromLibrary(station, folderPath) {
-  const basePath = `${folderPath}/${station.fileName}`;
+  const basePath = folderPath ? `${folderPath}/${station.fileName}` : station.fileName;
   const src = `${basePath}?v=${Date.now()}`;
   const audio = new Audio();
   audio.loop = true;
@@ -328,41 +290,6 @@ function setStationRecord(stationId, record) {
 
   state.stations.set(stationId, record);
   return { wasCurrent, wasPlaying };
-  updateOffsetReadout();
-}
-
-function promptManifestUpload() {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "application/json";
-  input.addEventListener("change", async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const data = JSON.parse(text);
-      if (data?.id !== "gta3" || !data?.stations) {
-        alert("Invalid manifest. Expected an object with id 'gta3' and a stations map.");
-        return;
-      }
-      state.manifest = data;
-      persistManifest(data);
-      refreshAllStations();
-      alert("Manifest loaded successfully.");
-    } catch (error) {
-      console.error("Failed to load manifest", error);
-      alert("Failed to load manifest. See console for details.");
-    }
-  });
-  input.click();
-}
-
-function refreshAllStations() {
-  for (const station of state.selectedGame.stations) {
-    const record = state.stations.get(station.id);
-    if (!record?.file) continue;
-    validateStationFile(station, record.file);
-  }
 }
 
 function updateOffsetReadout() {
@@ -428,60 +355,6 @@ async function loadStationFromUpload(station, file) {
   } else {
     updateStationSelector();
     updatePlayerControls();
-    updateStationStatus(station.id, "error", `Expected file named ${station.fileName}`);
-    return;
-  }
-
-  updateStationStatus(station.id, "pending", "Hashing...");
-  await validateStationFile(station, file);
-}
-
-async function validateStationFile(station, file) {
-  try {
-    const buffer = await file.arrayBuffer();
-    const computedMd5 = md5FromArrayBuffer(buffer);
-    const manifestEntry = state.manifest.stations?.[station.id];
-
-    if (!manifestEntry) {
-      updateStationStatus(station.id, "error", "No MD5 defined in manifest.");
-      return;
-    }
-
-    if (!manifestEntry.expectedMd5 || manifestEntry.expectedMd5 === "REPLACE_WITH_REAL_MD5") {
-      updateStationStatus(station.id, "error", "Manifest missing MD5. Update your manifest file.");
-      return;
-    }
-
-    const expected = manifestEntry.expectedMd5.toLowerCase();
-
-    if (computedMd5.toLowerCase() !== expected) {
-      updateStationStatus(station.id, "error", "MD5 mismatch. Verify you ripped the correct file.");
-      return;
-    }
-
-    const audio = new Audio();
-    audio.src = URL.createObjectURL(new Blob([buffer], { type: file.type || "audio/wav" }));
-    audio.loop = true;
-    await waitForMetadata(audio);
-
-    state.stations.set(station.id, {
-      file,
-      md5: computedMd5,
-      audio,
-      duration: audio.duration,
-    });
-
-    updateStationStatus(station.id, "valid", `Verified • ${formatDuration(audio.duration)}`);
-
-    if (!state.currentStationId) {
-      selectStation(station.id);
-    } else if (state.currentStationId === station.id) {
-      syncActiveStation();
-    }
-    updatePlayerControls();
-  } catch (error) {
-    console.error("Failed to validate station", error);
-    updateStationStatus(station.id, "error", "Failed to read file");
   }
 }
 
@@ -515,14 +388,14 @@ function waitForMetadata(audio) {
 function updateStationStatus(stationId, stateKey, message) {
   const item = els.stationManager.querySelector(`.station-item[data-station-id="${stationId}"]`);
   if (!item) return;
-  item.classList.remove("station-item--valid", "station-item--error");
+  item.classList.remove("station-item--valid", "station-item--error", "station-item--missing");
   if (stateKey === "valid") item.classList.add("station-item--valid");
   if (stateKey === "error") item.classList.add("station-item--error");
+  if (stateKey === "missing") item.classList.add("station-item--missing");
   const status = item.querySelector(".station-status");
   if (status) {
     status.dataset.state = stateKey;
     status.innerHTML = message;
-    status.textContent = message;
   }
 }
 
@@ -532,7 +405,6 @@ function renderPlayer() {
     <h2>Radio player</h2>
     <div class="info-text">
       Once every station is ready, pick one below. The simulator keeps each loop aligned with the shared broadcast clock even when you hop between stations.
-      Switching stations keeps the global broadcast clock in sync. Skipping adjusts the shared offset for every station.
     </div>
     <div class="controls" id="player-controls">
       <button id="play-pause" disabled>Play</button>
@@ -551,14 +423,25 @@ function renderPlayer() {
 function updateStationSelector() {
   const container = document.getElementById("station-selector");
   if (!container || !state.selectedGame) return;
-  if (!container) return;
   container.replaceChildren();
+
+  const folderPath = getLibraryFolder(state.selectedGame.id);
+  const folderDisplay = folderPath ? `${folderPath}/` : "";
 
   for (const station of state.selectedGame.stations) {
     const button = document.createElement("button");
     button.textContent = station.name;
-    button.disabled = !state.stations.has(station.id);
+    const hasRecord = state.stations.has(station.id);
+    button.disabled = !hasRecord;
     button.classList.toggle("active", station.id === state.currentStationId);
+    button.classList.toggle("missing", !hasRecord);
+    if (hasRecord) {
+      button.title = "Station ready";
+    } else if (folderPath) {
+      button.title = `Missing ${station.fileName}. Copy it to ${folderDisplay}${station.fileName} or upload below.`;
+    } else {
+      button.title = `Missing ${station.fileName}. Upload it below.`;
+    }
     button.addEventListener("click", () => selectStation(station.id));
     container.appendChild(button);
   }
@@ -610,7 +493,6 @@ function updateNowPlaying() {
   label.dataset.state = "valid";
   const stationName = state.selectedGame?.stations.find((s) => s.id === state.currentStationId)?.name || "";
   label.textContent = `${stationName} • ${formatDuration(position)} / ${formatDuration(total)}`;
-  label.textContent = `${state.selectedGame.stations.find((s) => s.id === state.currentStationId)?.name || ""} • ${formatDuration(position)} / ${formatDuration(total)}`;
 }
 
 function updatePlayerControls() {
@@ -684,7 +566,6 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function init() {
-  state.manifest = loadStoredManifest();
   renderGameSelection();
   startTick();
 

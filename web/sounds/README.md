@@ -18,4 +18,4 @@ web/
         GAME.wav
 ```
 
-The site automatically scans `sounds/gta/3/` at runtime and loads any files it finds. Keep the filenames exactly as they appear in the original game archives.
+The site automatically scans `sounds/gta/3/` at runtime and loads any files it finds. Keep the filenames exactly as they appear in the original game archives—any station still waiting on a file will appear grey in the UI with the missing filename listed for you.
