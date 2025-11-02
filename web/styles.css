@@ -198,6 +198,17 @@ body {
   margin-top: 1rem;
 }
 
+.instruction-list {
+  margin: 0.75rem 0 1.25rem;
+  padding-left: 1.2rem;
+  color: #cbd5f5;
+  line-height: 1.6;
+}
+
+.instruction-list li + li {
+  margin-top: 0.5rem;
+}
+
 .info-text {
   color: #cbd5f5;
   font-size: 0.95rem;

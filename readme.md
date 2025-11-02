@@ -1,5 +1,14 @@
 # GTA Radio Station Simulator
 
+This project is a proof-of-concept web application that emulates the Grand Theft Auto III radio behaviour. Once you supply the original radio station audio from your copy of GTA III, the player keeps every station in sync with a shared broadcast clock, so swapping stations instantly resumes wherever the in-game schedule would be.
+
+## Features
+
+- **Guided setup:** GTA III is available today; later entries are marked "coming soon". The interface walks you through ripping, organising, and loading each station.
+- **Automatic folder scan:** Drop the WAV files into `web/sounds/gta/3/` and the app loads them automatically at runtime.
+- **Manual uploads welcome:** If you prefer, upload individual stations in the browser—filenames are validated so everything stays authentic.
+- **Real-time synchronisation:** The broadcast clock follows your real-world time-of-day. Switching stations or skipping forward/backward keeps every station aligned, just like the original engine.
+- **Offset controls & persistence:** Adjust or reset the shared offset to correct drift, and pick up where you left off thanks to `localStorage`.
 This project is a proof-of-concept web application that emulates the Grand Theft Auto III radio behaviour. Once you upload the original radio station audio from your copy of GTA III, the player keeps every station in sync with a shared broadcast clock, so swapping stations instantly resumes wherever the in-game schedule would be.
 
 ## Features
@@ -20,6 +29,30 @@ This project is a proof-of-concept web application that emulates the Grand Theft
    ```
 2. Open the reported URL in a modern browser (the app relies on ES modules and the Web Audio API).
 3. Choose **Grand Theft Auto III** on the home screen.
+4. Follow the on-screen steps to prepare your audio.
+
+### Preparing your audio
+
+1. Rip each station (`HEAD.wav`, `CLASS.wav`, `FLASH.wav`, `KJAH.wav`, `LIPS.wav`, `RISE.wav`, `MSX.wav`, `CHAT.wav`, `GAME.wav`) from your own copy of GTA III.
+2. Create the folder structure below and copy the files into it without renaming them:
+
+   ```
+   web/
+     sounds/
+       gta/
+         3/
+           HEAD.wav
+           CLASS.wav
+           FLASH.wav
+           KJAH.wav
+           LIPS.wav
+           RISE.wav
+           MSX.wav
+           CHAT.wav
+           GAME.wav
+   ```
+
+3. Start the web app and click **Scan GTA III folder**. The player will pick up any files it finds. If a station is still missing you can upload it manually via the provided inputs.
 4. Upload the nine radio WAV files exactly as exported by the game (e.g. `HEAD.wav`, `RISE.wav`).
 5. Provide an MD5 manifest so the player can verify your files.
 
@@ -53,6 +86,15 @@ The player computes the target playback position from the real time-of-day and t
 
 ```
 web/
+  index.html        # Application shell
+  styles.css        # Styling for the UI
+  app.js            # Gameplay logic and playback synchronisation
+  sounds/
+    README.md       # Drop-in folder instructions
+    gta/
+      3/            # Place your GTA III WAV files here
+.github/workflows/
+  deploy.yml        # GitHub Pages workflow for one-click deployments
   index.html    # Application shell
   styles.css    # Styling for the UI
   md5.js        # Dependency-free MD5 implementation used for file validation
@@ -80,6 +122,7 @@ If you prefer manual uploads instead of Pages, you can also copy the contents of
 
 ## Roadmap
 
+- Add full station libraries and UI for Vice City, San Andreas, and Liberty City Stories.
 - Add manifests and UI for Vice City, San Andreas, and Liberty City Stories.
 - Surface cue-sheet support (track listings, DJ chatter markers).
 - Integrate service worker caching and a more robust persistence layer.

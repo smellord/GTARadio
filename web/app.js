@@ -1,3 +1,6 @@
+const STORAGE_KEYS = {
+  OFFSET: "gta-radio-time-offset",
+  LAST_GAME: "gta-radio-last-game",
 import { md5FromArrayBuffer } from "./md5.js";
 
 const STORAGE_KEYS = {
@@ -18,6 +21,8 @@ const GTA3_STATIONS = [
   { id: "GAME", name: "Game Radio", fileName: "GAME.wav" },
 ];
 
+const GAME_LIBRARY_FOLDERS = {
+  gta3: "sounds/gta/3",
 const DEFAULT_MANIFEST = {
   id: "gta3",
   version: 1,
@@ -36,6 +41,8 @@ const GAMES = [
     id: "gta3",
     name: "Grand Theft Auto III",
     status: "available",
+    description:
+      "Sync your GTA III radio stations with the original broadcast clock. Follow the guided setup below.",
     description: "Upload the nine original radio station WAV files ripped from your copy of GTA III.",
     stations: GTA3_STATIONS,
   },
@@ -46,7 +53,6 @@ const GAMES = [
 
 const state = {
   selectedGame: null,
-  manifest: DEFAULT_MANIFEST,
   stations: new Map(),
   currentStationId: null,
   offsetSeconds: Number(localStorage.getItem(STORAGE_KEYS.OFFSET)) || 0,
@@ -83,34 +89,16 @@ function saveOffset() {
   localStorage.setItem(STORAGE_KEYS.OFFSET, String(state.offsetSeconds));
 }
 
-function loadStoredManifest() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.MANIFEST);
-    if (!raw) return DEFAULT_MANIFEST;
-    const parsed = JSON.parse(raw);
-    if (parsed?.id === "gta3" && parsed?.stations) {
-      return parsed;
-    }
-  } catch (error) {
-    console.warn("Failed to parse stored manifest", error);
-  }
-  return DEFAULT_MANIFEST;
-}
-
-function persistManifest(manifest) {
-  localStorage.setItem(STORAGE_KEYS.MANIFEST, JSON.stringify(manifest));
-}
-
 function renderGameSelection() {
   const lastGame = localStorage.getItem(STORAGE_KEYS.LAST_GAME);
   const container = document.createElement("div");
   container.innerHTML = `
     <h2>Select your game</h2>
     <p class="info-text">
-      Only GTA III is supported right now. Vice City, San Andreas, and other entries
-      are planned and marked as coming soon.
+      Pick the title you want to simulate. Each game needs its original radio audio ripped from your own copy.
     </p>
   `;
+
   const grid = document.createElement("div");
   grid.className = "game-grid";
 
@@ -123,7 +111,7 @@ function renderGameSelection() {
       ${game.status === "soon" ? `<span class="badge">Coming soon</span>` : ""}
     `;
     const button = document.createElement("button");
-    button.textContent = game.status === "available" ? "Load stations" : "Unavailable";
+    button.textContent = game.status === "available" ? "Open setup" : "Unavailable";
     button.disabled = game.status !== "available";
     button.addEventListener("click", () => selectGame(game.id));
     if (game.id === lastGame && game.status === "available") {
@@ -149,6 +137,43 @@ function selectGame(gameId) {
   els.player.hidden = false;
 }
 
+function getLibraryFolder(gameId) {
+  return GAME_LIBRARY_FOLDERS[gameId] || "";
+}
+
+function renderStationManager() {
+  if (!state.selectedGame) return;
+
+  const folderPath = getLibraryFolder(state.selectedGame.id);
+  const folderDisplay = folderPath ? `${folderPath}/` : "the expected folder";
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = `
+    <h2>${state.selectedGame.name} station setup</h2>
+    <p class="info-text">
+      Follow these steps to mirror the way GTA III keeps every station in sync with a shared broadcast clock.
+    </p>
+    <ol class="instruction-list">
+      <li>Rip each radio station from your own copy of the game as an unmodified <code>.wav</code> file.</li>
+      <li>Create the folder <code>${folderDisplay}</code> inside the project and copy the files there without renaming them.</li>
+      <li>Press <strong>Scan GTA III folder</strong> to pull them in automatically, or upload individual files below.</li>
+    </ol>
+    <p class="info-text">
+      The filenames must stay exactly as the game shipped (HEAD.wav, CLASS.wav, RISE.wav, etc.). If a station is missing, the status message will point you to the fix.
+    </p>
+    <div class="controls">
+      <button id="scan-library">Scan GTA III folder</button>
+      <button id="reset-offset">Reset broadcast clock</button>
+      <span class="station-status" data-state="waiting" id="offset-readout">Offset: ${formatClock(
+        state.offsetSeconds
+      )}</span>
+    </div>
+  `;
+
+  const scanButton = wrapper.querySelector("#scan-library");
+  scanButton?.addEventListener("click", () => scanLocalLibrary(folderPath));
+
+  const resetButton = wrapper.querySelector("#reset-offset");
+  resetButton?.addEventListener("click", () => {
 function renderStationManager() {
   const wrapper = document.createElement("div");
   wrapper.innerHTML = `
@@ -188,6 +213,7 @@ function renderStationManager() {
     const info = document.createElement("div");
     info.innerHTML = `
       <strong>${station.name}</strong>
+      <div class="station-status" data-state="waiting">Place <code>${station.fileName}</code> in <code>${folderDisplay}</code> or upload it below.</div>
       <div class="station-status" data-state="waiting">Awaiting upload</div>
     `;
 
@@ -206,6 +232,8 @@ function renderStationManager() {
   const warning = document.createElement("div");
   warning.className = "warning";
   warning.innerHTML = `
+    <strong>Reminder:</strong> Only use audio you legally ripped from a copy of the game you own. This simulator never uploads your files.
+    For reference on timing, inspect the open-source <code>openrw</code> project, which recreates the same radio logic.
     <strong>Important:</strong> This tool only works with audio you ripped yourself. Do not distribute copyrighted material.
     For authentic timing information, compare against <code>openrw</code>'s radio implementation.
   `;
@@ -213,6 +241,93 @@ function renderStationManager() {
   wrapper.appendChild(warning);
 
   els.stationManager.replaceChildren(wrapper);
+  scanLocalLibrary(folderPath);
+}
+
+async function scanLocalLibrary(folderPath) {
+  if (!state.selectedGame) return;
+
+  const folderDisplay = folderPath ? `${folderPath}/` : "the expected folder";
+
+  for (const station of state.selectedGame.stations) {
+    updateStationStatus(station.id, "pending", `Looking for ${station.fileName} in ${folderDisplay}...`);
+    try {
+      await loadStationFromLibrary(station, folderPath);
+    } catch (error) {
+      const fallback = describeRecord(station.id);
+      if (fallback) {
+        updateStationStatus(station.id, "valid", fallback);
+      } else {
+        const guidance = folderPath
+          ? `Copy ${station.fileName} into ${folderDisplay} or upload it manually.`
+          : `Upload ${station.fileName} manually using the button below.`;
+        updateStationStatus(station.id, "error", `File not found. ${guidance}`);
+      }
+    }
+  }
+
+  updateStationSelector();
+  updatePlayerControls();
+}
+
+async function loadStationFromLibrary(station, folderPath) {
+  const basePath = `${folderPath}/${station.fileName}`;
+  const src = `${basePath}?v=${Date.now()}`;
+  const audio = new Audio();
+  audio.loop = true;
+  audio.preload = "metadata";
+  const metadataPromise = waitForMetadata(audio);
+  audio.src = src;
+  audio.load();
+  await metadataPromise;
+
+  const { wasCurrent, wasPlaying } = setStationRecord(station.id, {
+    audio,
+    duration: audio.duration,
+    source: "library",
+    origin: basePath,
+  });
+
+  updateStationStatus(station.id, "valid", describeRecord(station.id));
+
+  if (!state.currentStationId) {
+    selectStation(station.id);
+  } else if (wasCurrent) {
+    syncActiveStation(wasPlaying);
+    updatePlayerControls();
+  } else {
+    updateStationSelector();
+    updatePlayerControls();
+  }
+}
+
+function describeRecord(stationId) {
+  const record = state.stations.get(stationId);
+  if (!record) return "";
+  const duration = isFinite(record.duration) ? formatDuration(record.duration) : "unknown length";
+  if (record.source === "library") {
+    return `Loaded from ${record.origin} • ${duration}`;
+  }
+  if (record.source === "upload") {
+    return `Using uploaded file (${record.origin}) • ${duration}`;
+  }
+  return `Ready • ${duration}`;
+}
+
+function setStationRecord(stationId, record) {
+  const previous = state.stations.get(stationId);
+  const wasCurrent = state.currentStationId === stationId;
+  const wasPlaying = wasCurrent && previous ? !previous.audio.paused : false;
+
+  if (previous?.audio) {
+    previous.audio.pause();
+  }
+  if (previous?.objectUrl && previous.objectUrl !== record.objectUrl) {
+    URL.revokeObjectURL(previous.objectUrl);
+  }
+
+  state.stations.set(stationId, record);
+  return { wasCurrent, wasPlaying };
   updateOffsetReadout();
 }
 
@@ -262,6 +377,57 @@ async function onFileSelected(station, event) {
   if (!file) return;
 
   if (file.name !== station.fileName) {
+    updateStationStatus(
+      station.id,
+      "error",
+      `Rename the file to ${station.fileName} so it matches the original asset name.`
+    );
+    return;
+  }
+
+  updateStationStatus(station.id, "pending", "Loading upload...");
+  try {
+    await loadStationFromUpload(station, file);
+  } catch (error) {
+    console.error("Failed to load upload", error);
+    updateStationStatus(station.id, "error", "Unable to read the uploaded file. Try ripping it again.");
+  }
+}
+
+async function loadStationFromUpload(station, file) {
+  const audio = new Audio();
+  audio.loop = true;
+  audio.preload = "metadata";
+  const url = URL.createObjectURL(file);
+  const metadataPromise = waitForMetadata(audio);
+  audio.src = url;
+  audio.load();
+
+  try {
+    await metadataPromise;
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+
+  const { wasCurrent, wasPlaying } = setStationRecord(station.id, {
+    audio,
+    duration: audio.duration,
+    source: "upload",
+    origin: file.name,
+    objectUrl: url,
+  });
+
+  updateStationStatus(station.id, "valid", describeRecord(station.id));
+
+  if (!state.currentStationId) {
+    selectStation(station.id);
+  } else if (wasCurrent) {
+    syncActiveStation(wasPlaying);
+    updatePlayerControls();
+  } else {
+    updateStationSelector();
+    updatePlayerControls();
     updateStationStatus(station.id, "error", `Expected file named ${station.fileName}`);
     return;
   }
@@ -355,6 +521,7 @@ function updateStationStatus(stationId, stateKey, message) {
   const status = item.querySelector(".station-status");
   if (status) {
     status.dataset.state = stateKey;
+    status.innerHTML = message;
     status.textContent = message;
   }
 }
@@ -364,6 +531,7 @@ function renderPlayer() {
   wrapper.innerHTML = `
     <h2>Radio player</h2>
     <div class="info-text">
+      Once every station is ready, pick one below. The simulator keeps each loop aligned with the shared broadcast clock even when you hop between stations.
       Switching stations keeps the global broadcast clock in sync. Skipping adjusts the shared offset for every station.
     </div>
     <div class="controls" id="player-controls">
@@ -382,6 +550,7 @@ function renderPlayer() {
 
 function updateStationSelector() {
   const container = document.getElementById("station-selector");
+  if (!container || !state.selectedGame) return;
   if (!container) return;
   container.replaceChildren();
 
@@ -439,6 +608,8 @@ function updateNowPlaying() {
   const total = record.duration;
   const position = ((now + state.offsetSeconds) % total + total) % total;
   label.dataset.state = "valid";
+  const stationName = state.selectedGame?.stations.find((s) => s.id === state.currentStationId)?.name || "";
+  label.textContent = `${stationName} • ${formatDuration(position)} / ${formatDuration(total)}`;
   label.textContent = `${state.selectedGame.stations.find((s) => s.id === state.currentStationId)?.name || ""} • ${formatDuration(position)} / ${formatDuration(total)}`;
 }
 
@@ -526,6 +697,9 @@ function init() {
 window.addEventListener("beforeunload", () => {
   for (const record of state.stations.values()) {
     record.audio.pause();
+    if (record.objectUrl) {
+      URL.revokeObjectURL(record.objectUrl);
+    }
   }
   stopTick();
 });
