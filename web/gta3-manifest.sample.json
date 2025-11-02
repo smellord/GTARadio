@@ -1,0 +1,15 @@
+{
+  "id": "gta3",
+  "version": 1,
+  "stations": {
+    "HEAD": { "fileName": "HEAD.wav", "expectedMd5": "REPLACE_WITH_REAL_MD5" },
+    "DOUBLE_CLEF": { "fileName": "CLASS.wav", "expectedMd5": "REPLACE_WITH_REAL_MD5" },
+    "FLASH": { "fileName": "FLASH.wav", "expectedMd5": "REPLACE_WITH_REAL_MD5" },
+    "JAH": { "fileName": "KJAH.wav", "expectedMd5": "REPLACE_WITH_REAL_MD5" },
+    "LIPS": { "fileName": "LIPS.wav", "expectedMd5": "REPLACE_WITH_REAL_MD5" },
+    "RISE": { "fileName": "RISE.wav", "expectedMd5": "REPLACE_WITH_REAL_MD5" },
+    "MSX": { "fileName": "MSX.wav", "expectedMd5": "REPLACE_WITH_REAL_MD5" },
+    "CHATTERBOX": { "fileName": "CHAT.wav", "expectedMd5": "REPLACE_WITH_REAL_MD5" },
+    "GAME": { "fileName": "GAME.wav", "expectedMd5": "REPLACE_WITH_REAL_MD5" }
+  }
+}
