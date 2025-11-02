@@ -146,15 +146,16 @@ export function decodeImaAdpcmToPcm(arrayBuffer, header) {
       break;
     }
 
-    const bytesPerChannel = Math.floor((blockSize - 4 * numChannels) / numChannels);
-    if (bytesPerChannel <= 0) {
+    const dataBytes = blockSize - 4 * numChannels;
+    if (dataBytes <= 0) {
       break;
     }
 
-    const blockSamples = samplesPerBlock || (1 + bytesPerChannel * 2);
+    const blockSamples = samplesPerBlock || (1 + Math.floor((dataBytes * 2) / numChannels));
 
     const predictors = new Array(numChannels);
     const indices = new Array(numChannels);
+    const written = new Array(numChannels).fill(0);
 
     for (let channel = 0; channel < numChannels; channel += 1) {
       const headerOffset = offset + channel * 4;
@@ -168,36 +169,38 @@ export function decodeImaAdpcmToPcm(arrayBuffer, header) {
       predictors[channel] = predictor;
       indices[channel] = index;
       channelSamples[channel].push(predictor);
+      written[channel] = 1; // predictor counts as first sample
     }
 
     const dataStart = offset + 4 * numChannels;
 
-    for (let channel = 0; channel < numChannels; channel += 1) {
-      let predictor = predictors[channel];
-      let stepIndex = indices[channel];
-      const channelOffset = dataStart + channel * bytesPerChannel;
-      let written = 1; // predictor already stored
+    for (let byteIndex = 0; byteIndex < dataBytes; byteIndex += 1) {
+      const channel = byteIndex % numChannels;
+      if (written[channel] >= blockSamples) {
+        continue;
+      }
 
-      for (let i = 0; i < bytesPerChannel && written < blockSamples; i += 1) {
-        if (channelOffset + i >= dataEnd) {
+      const byteOffset = dataStart + byteIndex;
+      if (byteOffset >= dataEnd) {
+        break;
+      }
+
+      const byte = view.getUint8(byteOffset);
+      const nibbles = [byte & 0x0f, byte >> 4];
+
+      for (const nibble of nibbles) {
+        if (written[channel] >= blockSamples) {
           break;
         }
-        const byte = view.getUint8(channelOffset + i);
-        const low = byte & 0x0f;
-        const high = byte >> 4;
-
-        const first = decodeImaNibble(low, predictor, stepIndex);
-        predictor = first.predictor;
-        stepIndex = first.stepIndex;
-        channelSamples[channel].push(first.sample);
-        written += 1;
-        if (written >= blockSamples) break;
-
-        const second = decodeImaNibble(high, predictor, stepIndex);
-        predictor = second.predictor;
-        stepIndex = second.stepIndex;
-        channelSamples[channel].push(second.sample);
-        written += 1;
+        const { sample, predictor, stepIndex } = decodeImaNibble(
+          nibble,
+          predictors[channel],
+          indices[channel]
+        );
+        predictors[channel] = predictor;
+        indices[channel] = stepIndex;
+        channelSamples[channel].push(sample);
+        written[channel] += 1;
       }
     }
 
@@ -274,16 +277,23 @@ export function preparePlayableAudio(arrayBuffer, { allowAdpcmDecode = false } =
       format: "ima-adpcm",
       duration: decoded.duration,
       sampleRate: header.sampleRate,
+      channels: header.numChannels,
+      frames: decoded.frames,
     };
   }
 
   if (header.audioFormat === AUDIO_FORMAT_PCM) {
+    const bytesPerSample = header.bitsPerSample / 8;
+    const frameDivider = header.numChannels * bytesPerSample;
+    const frames = frameDivider > 0 ? Math.floor(header.dataSize / frameDivider) : null;
     return {
       blob: new Blob([arrayBuffer], { type: "audio/wav" }),
       note: `Uncompressed PCM @ ${header.sampleRate} Hz`,
       format: "pcm",
       duration: header.duration,
       sampleRate: header.sampleRate,
+      channels: header.numChannels,
+      frames,
     };
   }
 
