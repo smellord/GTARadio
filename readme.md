@@ -10,6 +10,17 @@ This project is a proof-of-concept web application that emulates the Grand Theft
 - **Missing file indicators:** Stations that are still waiting for their WAVs are greyed out with explicit filenames so you always know what to provide next.
 - **Real-time synchronisation:** The broadcast clock follows your real-world time-of-day. Switching stations or skipping forward/backward keeps every station aligned, just like the original engine.
 - **Offset controls & persistence:** Adjust or reset the shared offset to correct drift, and pick up where you left off thanks to `localStorage`.
+- **Real-time synchronisation:** The broadcast clock follows your real-world time-of-day. Switching stations or skipping forward/backward keeps every station aligned, just like the original engine.
+- **Offset controls & persistence:** Adjust or reset the shared offset to correct drift, and pick up where you left off thanks to `localStorage`.
+This project is a proof-of-concept web application that emulates the Grand Theft Auto III radio behaviour. Once you upload the original radio station audio from your copy of GTA III, the player keeps every station in sync with a shared broadcast clock, so swapping stations instantly resumes wherever the in-game schedule would be.
+
+## Features
+
+- **Game picker:** GTA III is available today; later entries are marked "coming soon" to match the planned roadmap.
+- **Station validation:** Each upload checks the filename and MD5 hash against a manifest so that only untouched assets are accepted.
+- **Real-time synchronisation:** The broadcast clock follows your real-world time-of-day. Switching stations or skipping forward/backward keeps every station aligned, just like the original engine.
+- **Offset controls:** Adjust or reset the shared offset to correct drift or jump ahead/back.
+- **Persistence:** The selected game, manifest, and offset are cached in `localStorage`, allowing you to continue where you left off.
 
 ## Getting started
 
@@ -45,6 +56,27 @@ This project is a proof-of-concept web application that emulates the Grand Theft
    ```
 
 3. Start the web app and click **Scan GTA III folder**. The player will pick up any files it finds. Any station that remains grey after the scan will list the exact filename it is waiting for, and you can upload it manually via the provided inputs.
+3. Start the web app and click **Scan GTA III folder**. The player will pick up any files it finds. If a station is still missing you can upload it manually via the provided inputs.
+4. Upload the nine radio WAV files exactly as exported by the game (e.g. `HEAD.wav`, `RISE.wav`).
+5. Provide an MD5 manifest so the player can verify your files.
+
+### MD5 manifest
+
+The application ships with placeholder MD5 values. Create a JSON file with the following structure and click **Load MD5 manifest** to import it:
+
+```json
+{
+  "id": "gta3",
+  "version": 1,
+  "stations": {
+    "HEAD": { "fileName": "HEAD.wav", "expectedMd5": "<md5 hash>" },
+    "DOUBLE_CLEF": { "fileName": "CLASS.wav", "expectedMd5": "<md5 hash>" }
+    // ... remaining stations ...
+  }
+}
+```
+
+You can generate the MD5 hashes with your favourite hashing tool or reuse the checksums distributed with the [openrw](https://github.com/rwengine/openrw) project.
 
 ### Station timing
 
@@ -67,6 +99,12 @@ web/
       3/            # Place your GTA III WAV files here
 .github/workflows/
   deploy.yml        # GitHub Pages workflow for one-click deployments
+  index.html    # Application shell
+  styles.css    # Styling for the UI
+  md5.js        # Dependency-free MD5 implementation used for file validation
+  app.js        # Gameplay logic, manifest handling, and playback synchronisation
+.github/workflows/
+  deploy.yml    # GitHub Pages workflow for one-click deployments
 ```
 
 ## Deploying to GitHub Pages
@@ -89,6 +127,7 @@ If you prefer manual uploads instead of Pages, you can also copy the contents of
 ## Roadmap
 
 - Add full station libraries and UI for Vice City, San Andreas, and Liberty City Stories.
+- Add manifests and UI for Vice City, San Andreas, and Liberty City Stories.
 - Surface cue-sheet support (track listings, DJ chatter markers).
 - Integrate service worker caching and a more robust persistence layer.
 - Wrap the web app in a native shell (Capacitor, Tauri, or React Native WebView) for distribution on mobile app stores.
