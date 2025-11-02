@@ -1,3 +1,5 @@
+import { preparePlayableAudio } from "./audio-decoder.js";
+
 const STORAGE_KEYS = {
   OFFSET: "gta-radio-time-offset",
   LAST_GAME: "gta-radio-last-game",
@@ -218,6 +220,13 @@ async function scanLocalLibrary(folderPath) {
         updateStationStatus(station.id, "valid", fallback);
       } else {
         const guidance = folderPath
+          ? `File <code>${station.fileName}</code> expected at <code>${folderDisplay}${station.fileName}</code> is missing or unreadable.`
+          : `Upload <code>${station.fileName}</code> manually using the button below.`;
+        const details = error instanceof Error ? error.message : "Unknown error";
+        updateStationStatus(
+          station.id,
+          "error",
+          `${guidance}<br />Decoder message: ${details}`
           ? `File <code>${station.fileName}</code> expected at <code>${folderDisplay}${station.fileName}</code> is missing.`
           : `Upload <code>${station.fileName}</code> manually using the button below.`;
         updateStationStatus(
@@ -248,6 +257,17 @@ async function loadStationFromLibrary(station, folderPath) {
     throw new Error(`Request for ${basePath} failed with ${response.status} ${response.statusText}`);
   }
 
+  const arrayBuffer = await response.arrayBuffer();
+  let prepared;
+  try {
+    prepared = preparePlayableAudio(arrayBuffer, {
+      allowAdpcmDecode: state.selectedGame?.id === "gta3",
+    });
+  } catch (decodeError) {
+    throw new Error(`Could not decode ${station.fileName}: ${decodeError.message}`);
+  }
+
+  const objectUrl = URL.createObjectURL(prepared.blob);
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
   const audio = new Audio();
@@ -270,6 +290,8 @@ async function loadStationFromLibrary(station, folderPath) {
     source: "library",
     origin: basePath,
     objectUrl,
+    note: prepared.note,
+    format: prepared.format,
   });
 
   updateStationStatus(station.id, "valid", describeRecord(station.id));
@@ -289,6 +311,14 @@ function describeRecord(stationId) {
   const record = state.stations.get(stationId);
   if (!record) return "";
   const duration = isFinite(record.duration) ? formatDuration(record.duration) : "unknown length";
+  const details = [record.note, duration].filter(Boolean).join(" • ");
+  if (record.source === "library") {
+    return `Loaded from ${record.origin}${details ? ` – ${details}` : ""}`;
+  }
+  if (record.source === "upload") {
+    return `Using uploaded file (${record.origin})${details ? ` – ${details}` : ""}`;
+  }
+  return `Ready${details ? ` – ${details}` : ""}`;
   if (record.source === "library") {
     return `Loaded from ${record.origin} • ${duration}`;
   }
@@ -339,11 +369,31 @@ async function onFileSelected(station, event) {
     await loadStationFromUpload(station, file);
   } catch (error) {
     console.error("Failed to load upload", error);
+    const details = error instanceof Error ? error.message : "Unknown error";
+    updateStationStatus(
+      station.id,
+      "error",
+      `Unable to read the uploaded file.<br />Decoder message: ${details}`
+    );
     updateStationStatus(station.id, "error", "Unable to read the uploaded file. Try ripping it again.");
   }
 }
 
 async function loadStationFromUpload(station, file) {
+  const arrayBuffer = await file.arrayBuffer();
+  let prepared;
+  try {
+    prepared = preparePlayableAudio(arrayBuffer, {
+      allowAdpcmDecode: state.selectedGame?.id === "gta3",
+    });
+  } catch (decodeError) {
+    throw new Error(`Could not decode ${file.name}: ${decodeError.message}`);
+  }
+
+  const audio = new Audio();
+  audio.loop = true;
+  audio.preload = "metadata";
+  const url = URL.createObjectURL(prepared.blob);
   const audio = new Audio();
   audio.loop = true;
   audio.preload = "metadata";
@@ -365,6 +415,8 @@ async function loadStationFromUpload(station, file) {
     source: "upload",
     origin: file.name,
     objectUrl: url,
+    note: prepared.note,
+    format: prepared.format,
   });
 
   updateStationStatus(station.id, "valid", describeRecord(station.id));
