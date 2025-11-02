@@ -227,6 +227,12 @@ async function scanLocalLibrary(folderPath) {
           station.id,
           "error",
           `${guidance}<br />Decoder message: ${details}`
+          ? `File <code>${station.fileName}</code> expected at <code>${folderDisplay}${station.fileName}</code> is missing.`
+          : `Upload <code>${station.fileName}</code> manually using the button below.`;
+        updateStationStatus(
+          station.id,
+          "missing",
+          `${guidance} You can upload it here once you rip it from the game.`
         );
       }
     }
@@ -262,6 +268,8 @@ async function loadStationFromLibrary(station, folderPath) {
   }
 
   const objectUrl = URL.createObjectURL(prepared.blob);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
   const audio = new Audio();
   audio.loop = true;
   audio.preload = "metadata";
@@ -311,6 +319,13 @@ function describeRecord(stationId) {
     return `Using uploaded file (${record.origin})${details ? ` – ${details}` : ""}`;
   }
   return `Ready${details ? ` – ${details}` : ""}`;
+  if (record.source === "library") {
+    return `Loaded from ${record.origin} • ${duration}`;
+  }
+  if (record.source === "upload") {
+    return `Using uploaded file (${record.origin}) • ${duration}`;
+  }
+  return `Ready • ${duration}`;
 }
 
 function setStationRecord(stationId, record) {
@@ -360,6 +375,7 @@ async function onFileSelected(station, event) {
       "error",
       `Unable to read the uploaded file.<br />Decoder message: ${details}`
     );
+    updateStationStatus(station.id, "error", "Unable to read the uploaded file. Try ripping it again.");
   }
 }
 
@@ -378,6 +394,10 @@ async function loadStationFromUpload(station, file) {
   audio.loop = true;
   audio.preload = "metadata";
   const url = URL.createObjectURL(prepared.blob);
+  const audio = new Audio();
+  audio.loop = true;
+  audio.preload = "metadata";
+  const url = URL.createObjectURL(file);
   const metadataPromise = waitForMetadata(audio);
   audio.src = url;
   audio.load();
