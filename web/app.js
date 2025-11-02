@@ -212,6 +212,7 @@ async function scanLocalLibrary(folderPath) {
     try {
       await loadStationFromLibrary(station, folderPath);
     } catch (error) {
+      console.warn(`Failed to load ${station.fileName} from library`, error);
       const fallback = describeRecord(station.id);
       if (fallback) {
         updateStationStatus(station.id, "valid", fallback);
@@ -235,19 +236,40 @@ async function scanLocalLibrary(folderPath) {
 async function loadStationFromLibrary(station, folderPath) {
   const basePath = folderPath ? `${folderPath}/${station.fileName}` : station.fileName;
   const src = `${basePath}?v=${Date.now()}`;
+
+  let response;
+  try {
+    response = await fetch(src, { cache: "no-store" });
+  } catch (networkError) {
+    throw new Error(`Unable to reach ${basePath}: ${networkError.message}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`Request for ${basePath} failed with ${response.status} ${response.statusText}`);
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
   const audio = new Audio();
   audio.loop = true;
   audio.preload = "metadata";
   const metadataPromise = waitForMetadata(audio);
-  audio.src = src;
+  audio.src = objectUrl;
   audio.load();
-  await metadataPromise;
+
+  try {
+    await metadataPromise;
+  } catch (metadataError) {
+    URL.revokeObjectURL(objectUrl);
+    throw metadataError;
+  }
 
   const { wasCurrent, wasPlaying } = setStationRecord(station.id, {
     audio,
     duration: audio.duration,
     source: "library",
     origin: basePath,
+    objectUrl,
   });
 
   updateStationStatus(station.id, "valid", describeRecord(station.id));
