@@ -3,6 +3,8 @@ const STORAGE_KEYS = {
   LAST_GAME: "gta-radio-last-game",
 };
 
+const IMPORT_ENDPOINT = "/api/import-gta3";
+
 const GTA3_STATIONS = [
   { id: "HEAD", name: "Head Radio", mp3Name: "HEAD.mp3" },
   { id: "DOUBLE_CLEF", name: "Double Clef FM", mp3Name: "CLASS.mp3" },
@@ -73,6 +75,15 @@ function describeExpectedFilePathsHtml(station, folderPath) {
   }
   const base = folderPath.endsWith("/") ? folderPath : `${folderPath}/`;
   return `<code>${base}${getStationMp3Name(station)}</code>`;
+}
+
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function formatClock(seconds) {
@@ -161,16 +172,28 @@ function renderStationManager() {
     <p class="info-text">
       Follow these steps to mirror the way GTA III keeps every station in sync with a shared broadcast clock.
     </p>
-      <ol class="instruction-list">
-        <li>Rip each radio station from your own copy of the game as an unmodified <code>.wav</code> file (HEAD.wav, CLASS.wav, etc.).</li>
-        <li>Run <code>python tools/import_gta3_audio.py</code> (PowerShell and shell wrappers live in <code>/tools</code>) to convert them into MP3s inside <code>${folderDisplay}</code>. The web player only loads these MP3 versions.</li>
-        <li>Press <strong>Scan GTA III folder</strong> to pull them in automatically, or upload individual MP3s below.</li>
-      </ol>
-      <p class="info-text">
-        Any station that remains grey lists the <code>.mp3</code> filename you still need to provide.
-      </p>
+    <ol class="instruction-list">
+      <li>Rip each radio station from your own copy of the game as an unmodified <code>.wav</code> file (HEAD.wav, CLASS.wav, etc.).</li>
+      <li>Start the dev server with <code>python tools/serve.py</code> so the importer endpoint is available.</li>
+      <li>Use the importer below to point at your GTA III <code>audio</code> directory. It copies or converts every station into <code>${folderDisplay}</code> as MP3.</li>
+    </ol>
+    <div class="importer" id="gta3-importer">
+      <form id="gta3-import-form" class="importer__form">
+        <label class="importer__label" for="gta3-import-path">GTA III audio directory</label>
+        <div class="importer__row">
+          <input id="gta3-import-path" type="text" placeholder="C:\\Games\\GTA3\\audio" autocomplete="off" />
+          <button type="submit" id="gta3-import-submit">Import and convert</button>
+        </div>
+        <p class="station-status" data-state="waiting" id="import-feedback">
+          Waiting for import. Once the server is running, submit the path to your GTA III <code>audio</code> folder.
+        </p>
+      </form>
+    </div>
+    <p class="info-text">
+      Any station that remains grey lists the <code>.mp3</code> filename you still need to provide.
+    </p>
     <div class="controls">
-      <button id="scan-library">Scan GTA III folder</button>
+      <button id="refresh-library">Refresh station library</button>
       <button id="reset-offset">Reset broadcast clock</button>
       <span class="station-status" data-state="waiting" id="offset-readout">Offset: ${formatClock(
         state.offsetSeconds
@@ -178,8 +201,11 @@ function renderStationManager() {
     </div>
   `;
 
-  const scanButton = wrapper.querySelector("#scan-library");
-  scanButton?.addEventListener("click", () => scanLocalLibrary(folderPath));
+  const importForm = wrapper.querySelector("#gta3-import-form");
+  importForm?.addEventListener("submit", (event) => onImportSubmit(event, folderPath));
+
+  const refreshButton = wrapper.querySelector("#refresh-library");
+  refreshButton?.addEventListener("click", () => scanLocalLibrary(folderPath));
 
   const resetButton = wrapper.querySelector("#reset-offset");
   resetButton?.addEventListener("click", () => {
@@ -199,19 +225,13 @@ function renderStationManager() {
     item.className = "station-item station-item--missing";
     item.dataset.stationId = station.id;
 
-      const info = document.createElement("div");
-      info.innerHTML = `
-        <strong>${station.name}</strong>
-        <div class="station-status" data-state="missing">File <code>${station.mp3Name}</code> expected in <code>${folderDisplay}</code>. Run the importer or add it below.</div>
-      `;
-
-      const fileInput = document.createElement("input");
-      fileInput.type = "file";
-      fileInput.accept = ".mp3,.MP3";
-    fileInput.addEventListener("change", (event) => onFileSelected(station, event));
+    const info = document.createElement("div");
+    info.innerHTML = `
+      <strong>${station.name}</strong>
+      <div class="station-status" data-state="missing">File <code>${station.mp3Name}</code> expected in <code>${folderDisplay}</code>. Use the importer above to generate it.</div>
+    `;
 
     item.appendChild(info);
-    item.appendChild(fileInput);
     list.appendChild(item);
   }
 
@@ -258,7 +278,7 @@ async function scanLocalLibrary(folderPath) {
           : describeExpectedFileHtml(station);
         const guidance = folderPath
           ? `File ${expected} is missing or unreadable.`
-          : `Upload ${expected} manually using the button below.`;
+          : `Use the importer above to provide ${expected}.`;
         const details = error instanceof Error ? error.message : "Unknown error";
         updateStationStatus(
           station.id,
@@ -271,6 +291,103 @@ async function scanLocalLibrary(folderPath) {
 
   updateStationSelector();
   updatePlayerControls();
+}
+
+async function onImportSubmit(event, folderPath) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form) return;
+
+  const input = form.querySelector("#gta3-import-path");
+  const submit = form.querySelector("#gta3-import-submit");
+  const feedback = form.querySelector("#import-feedback");
+  if (!input || !feedback || !submit) return;
+
+  const rawPath = input.value.trim();
+  if (!rawPath) {
+    feedback.dataset.state = "error";
+    feedback.innerHTML = "Provide the full path to your GTA III <code>audio</code> folder.";
+    return;
+  }
+
+  feedback.dataset.state = "pending";
+  feedback.innerHTML = `Importing from <code>${escapeHtml(rawPath)}</code>...`;
+  submit.disabled = true;
+
+  let didImport = false;
+  try {
+    const payload = await requestServerImport(rawPath);
+    const summary = payload?.summary || {};
+    const message = formatImportSummary(summary);
+    const hasIssues = (summary.missing && summary.missing.length) || (summary.failures && summary.failures.length);
+    feedback.dataset.state = hasIssues ? "error" : "valid";
+    feedback.innerHTML = message;
+    didImport = true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Import failed.";
+    feedback.dataset.state = "error";
+    feedback.innerHTML = escapeHtml(message);
+  } finally {
+    submit.disabled = false;
+  }
+
+  if (didImport) {
+    await scanLocalLibrary(folderPath);
+  }
+}
+
+async function requestServerImport(gtaDir) {
+  let response;
+  try {
+    response = await fetch(IMPORT_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({ gta3Dir: gtaDir }),
+    });
+  } catch (networkError) {
+    throw new Error("Unable to reach the import endpoint. Start the server via python tools/serve.py and try again.");
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  let payload;
+  if (contentType.includes("application/json")) {
+    payload = await response.json();
+  } else {
+    const text = await response.text();
+    payload = { error: text };
+  }
+
+  if (!response.ok) {
+    const message = payload?.error || `Import failed with HTTP ${response.status}`;
+    throw new Error(message);
+  }
+
+  return payload;
+}
+
+function formatImportSummary(summary) {
+  const expected = summary.expected ?? GTA3_STATIONS.length;
+  const found = summary.found ?? 0;
+  const converted = summary.converted ?? 0;
+  const copied = summary.copied ?? 0;
+  const target = summary.target ? `<code>${escapeHtml(summary.target)}</code>` : "the project sounds folder";
+  const parts = [
+    `${found}/${expected} stations ready`,
+    `${converted} converted`,
+    `${copied} copied`,
+    `Output: ${target}`,
+  ];
+  if (summary.tool) {
+    parts.push(`Tool: ${escapeHtml(summary.tool)}`);
+  }
+  if (summary.missing && summary.missing.length) {
+    parts.push(`Missing: ${summary.missing.map((stem) => `<code>${escapeHtml(stem)}</code>`).join(", ")}`);
+  }
+  if (summary.failures && summary.failures.length) {
+    parts.push(`Failed: ${summary.failures.map((stem) => `<code>${escapeHtml(stem)}</code>`).join(", ")}`);
+  }
+  return parts.join(" • ");
 }
 
 async function resolveStationUrl(station, folderPath) {
@@ -343,9 +460,6 @@ function describeRecord(stationId) {
   if (record.source === "library") {
     return `Loaded from ${record.origin}${details ? ` – ${details}` : ""}`;
   }
-  if (record.source === "upload") {
-    return `Using uploaded file (${record.origin})${details ? ` – ${details}` : ""}`;
-  }
   return `Ready${details ? ` – ${details}` : ""}`;
 }
 
@@ -369,82 +483,6 @@ function updateOffsetReadout() {
   const readout = document.getElementById("offset-readout");
   if (readout) {
     readout.textContent = `Offset: ${formatClock(state.offsetSeconds)}`;
-  }
-}
-
-async function onFileSelected(station, event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
-
-  const expectedName = getStationMp3Name(station).toLowerCase();
-  if (file.name.toLowerCase() !== expectedName) {
-    const expected = describeExpectedFileHtml(station);
-    updateStationStatus(
-      station.id,
-      "error",
-      `Rename the file to match the original asset name (${expected}).`
-    );
-    return;
-  }
-
-  updateStationStatus(station.id, "pending", "Loading upload...");
-  try {
-    await loadStationFromUpload(station, file);
-  } catch (error) {
-    console.error("Failed to load upload", error);
-    const details = error instanceof Error ? error.message : "Unknown error";
-    updateStationStatus(
-      station.id,
-      "error",
-      `Unable to read the uploaded file.<br />Reason: ${details}`
-    );
-  }
-}
-
-async function loadStationFromUpload(station, file) {
-  const audio = new Audio();
-  audio.loop = true;
-  audio.preload = "metadata";
-
-  const lowerName = file.name.toLowerCase();
-  const isMp3 = lowerName.endsWith(".mp3") || file.type === "audio/mpeg";
-
-  if (!isMp3) {
-    throw new Error("Only MP3 uploads are supported. Use the importer to convert WAV files.");
-  }
-
-  const url = URL.createObjectURL(file);
-  const metadataPromise = waitForMetadata(audio);
-  audio.src = url;
-  audio.load();
-
-  try {
-    await metadataPromise;
-  } catch (error) {
-    URL.revokeObjectURL(url);
-    throw error;
-  }
-
-  const { wasCurrent, wasPlaying } = setStationRecord(station.id, {
-    audio,
-    duration: audio.duration,
-    source: "upload",
-    origin: file.name,
-    objectUrl: url,
-    note: "MP3 upload",
-    format: "mp3",
-  });
-
-  updateStationStatus(station.id, "valid", describeRecord(station.id));
-
-  if (!state.currentStationId) {
-    selectStation(station.id);
-  } else if (wasCurrent) {
-    syncActiveStation(wasPlaying);
-    updatePlayerControls();
-  } else {
-    updateStationSelector();
-    updatePlayerControls();
   }
 }
 
@@ -529,9 +567,9 @@ function updateStationSelector() {
       button.title = "Station ready";
     } else if (folderPath) {
       const expectedPlain = describeExpectedFilePathsPlain(station, folderDisplay);
-      button.title = `Missing ${describeExpectedFilePlain(station)}. Copy ${expectedPlain} or upload below.`;
+      button.title = `Missing ${describeExpectedFilePlain(station)}. Copy ${expectedPlain} via the importer.`;
     } else {
-      button.title = `Missing ${describeExpectedFilePlain(station)}. Upload it below.`;
+      button.title = `Missing ${describeExpectedFilePlain(station)}. Use the importer above to provide it.`;
     }
     button.addEventListener("click", () => selectStation(station.id));
     container.appendChild(button);

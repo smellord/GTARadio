@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Import GTA III radio audio into web/sounds/gta/3 as MP3."""
+"""Import GTA III radio audio into ``web/sounds/gta/3`` as MP3 files."""
+
+from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import shutil
 import subprocess
 import sys
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 STATIONS = ["HEAD", "CLASS", "KJAH", "RISE", "LIPS", "GAME", "MSX", "FLASH", "CHAT"]
+
+
+class AudioImportError(RuntimeError):
+    """Raised when the audio import fails in a recoverable way."""
 
 
 def which_prog(candidates: Iterable[str]) -> Optional[str]:
@@ -36,7 +43,7 @@ def ensure_dir(path: pathlib.Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def transcode_to_mp3(tool: str, src: pathlib.Path, dst: pathlib.Path) -> int:
+def transcode_to_mp3(tool: str, src: pathlib.Path, dst: pathlib.Path) -> Tuple[int, List[str]]:
     cmd = [
         tool,
         "-y",
@@ -53,9 +60,111 @@ def transcode_to_mp3(tool: str, src: pathlib.Path, dst: pathlib.Path) -> int:
         str(dst),
     ]
     try:
-        return subprocess.call(cmd)
+        completed = subprocess.run(cmd, capture_output=True, text=True)
     except FileNotFoundError:
-        return 127
+        return 127, []
+    logs: List[str] = []
+    if completed.stdout:
+        logs.append(completed.stdout.strip())
+    if completed.stderr:
+        logs.append(completed.stderr.strip())
+    return completed.returncode, logs
+
+
+def resolve_tool(preferred: Optional[str] = None) -> Optional[str]:
+    if preferred:
+        resolved = shutil.which(preferred)
+        if resolved:
+            return resolved
+    return which_prog(["ffmpeg", "ffmpeg.exe"]) or which_prog(["avconv"])
+
+
+def import_gta3_audio(
+    audio_dir: pathlib.Path,
+    *,
+    target_dir: Optional[pathlib.Path] = None,
+    preferred_tool: Optional[str] = None,
+) -> Dict[str, object]:
+    audio_dir = pathlib.Path(audio_dir).expanduser()
+    if not audio_dir.exists() or not audio_dir.is_dir():
+        raise AudioImportError(f"Audio directory not found: {audio_dir}")
+
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    target_dir = target_dir or repo_root / "web" / "sounds" / "gta" / "3"
+    ensure_dir(target_dir)
+
+    tool = resolve_tool(preferred_tool)
+    if not tool:
+        raise AudioImportError(
+            "ffmpeg (or avconv) not found on PATH. Install ffmpeg: https://ffmpeg.org/download.html"
+        )
+
+    summary: Dict[str, object] = {
+        "expected": len(STATIONS),
+        "found": 0,
+        "copied": 0,
+        "converted": 0,
+        "missing": [],
+        "failures": [],
+        "details": [],
+        "target": str(target_dir),
+        "tool": tool,
+    }
+
+    for stem in STATIONS:
+        src = find_src(audio_dir, stem)
+        record: Dict[str, object] = {
+            "stem": stem,
+            "status": "missing",
+        }
+        if not src:
+            summary["missing"].append(stem)
+            summary["details"].append(record)
+            continue
+
+        summary["found"] += 1
+        dst = target_dir / f"{stem}.mp3"
+        record["source"] = str(src)
+        record["destination"] = str(dst)
+
+        if src.suffix.lower() == ".mp3":
+            shutil.copy2(src, dst)
+            record["status"] = "copied"
+            summary["copied"] += 1
+            summary["details"].append(record)
+            continue
+
+        code, logs = transcode_to_mp3(tool, src, dst)
+        if code == 0:
+            record["status"] = "converted"
+            summary["converted"] += 1
+        else:
+            record["status"] = "failed"
+            record["exit_code"] = code
+            if logs:
+                record["logs"] = logs
+            summary["failures"].append(stem)
+        summary["details"].append(record)
+
+    return summary
+
+
+def format_summary(summary: Dict[str, object]) -> str:
+    lines = [
+        f"Expected:   {summary['expected']}",
+        f"Found:      {summary['found']}",
+        f"Copied:     {summary['copied']}",
+        f"Transcoded: {summary['converted']}",
+        f"Target dir: {summary['target']}",
+        f"Tool:       {summary['tool']}",
+    ]
+    missing = summary.get("missing") or []
+    failures = summary.get("failures") or []
+    if missing:
+        lines.append(f"Missing:   {', '.join(missing)}")
+    if failures:
+        lines.append(f"Failures:  {', '.join(failures)}")
+    return "\n".join(lines)
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
@@ -66,65 +175,31 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         "--gta3-dir",
         help="Path to the GTA III audio directory (contains HEAD.wav, etc.)",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the summary as JSON (useful for automation).",
+    )
+    parser.add_argument(
+        "--tool",
+        help="Explicit ffmpeg/avconv binary to use.",
+    )
     args = parser.parse_args(argv)
 
     gta_dir = args.gta3_dir or input("Enter path to GTA III audio directory: ").strip().strip('"')
-    audio_dir = pathlib.Path(gta_dir).expanduser()
-    if not audio_dir.exists() or not audio_dir.is_dir():
-        print(f"Error: directory not found: {audio_dir}", file=sys.stderr)
+
+    try:
+        summary = import_gta3_audio(gta_dir, preferred_tool=args.tool)
+    except AudioImportError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 2
 
-    repo_root = pathlib.Path(__file__).resolve().parents[1]
-    target_dir = repo_root / "web" / "sounds" / "gta" / "3"
-    ensure_dir(target_dir)
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print(format_summary(summary))
 
-    tool = which_prog(["ffmpeg", "ffmpeg.exe"]) or which_prog(["avconv"])
-    if not tool:
-        print(
-            "Error: ffmpeg (or avconv) not found on PATH.\n"
-            "Install ffmpeg: https://ffmpeg.org/download.html",
-            file=sys.stderr,
-        )
-        return 3
-
-    found = 0
-    copied = 0
-    converted = 0
-    missing: List[str] = []
-
-    print(f"Source: {audio_dir}")
-    print(f"Target: {target_dir}\n")
-
-    for stem in STATIONS:
-        src = find_src(audio_dir, stem)
-        dst = target_dir / f"{stem}.mp3"
-        if not src:
-            print(f"[MISS] {stem}: not found")
-            missing.append(stem)
-            continue
-        found += 1
-        if src.suffix.lower() == ".mp3":
-            shutil.copy2(src, dst)
-            print(f"[COPY] {stem}: {src.name} -> {dst.name}")
-            copied += 1
-            continue
-        result = transcode_to_mp3(tool, src, dst)
-        if result == 0:
-            print(f"[ENC ] {stem}: {src.name} -> {dst.name}")
-            converted += 1
-        else:
-            print(f"[FAIL] {stem}: ffmpeg exited with {result}", file=sys.stderr)
-
-    print("\nSummary")
-    print(f"  Expected:   {len(STATIONS)}")
-    print(f"  Found:      {found}")
-    print(f"  Copied:     {copied}")
-    print(f"  Transcoded: {converted}")
-    if missing:
-        print(f"  Missing:    {', '.join(missing)}")
-    print(f"  Output dir: {target_dir}")
-
-    return 0 if found else 1
+    return 0 if summary.get("found", 0) else 1
 
 
 if __name__ == "__main__":
