@@ -1,30 +1,18 @@
-import { preparePlayableAudio } from "./audio-decoder.js";
-
 const STORAGE_KEYS = {
   OFFSET: "gta-radio-time-offset",
   LAST_GAME: "gta-radio-last-game",
 };
 
 const GTA3_STATIONS = [
-  { id: "HEAD", name: "Head Radio", fileName: "HEAD.wav", mp3Name: "HEAD.mp3" },
-  {
-    id: "DOUBLE_CLEF",
-    name: "Double Clef FM",
-    fileName: "CLASS.wav",
-    mp3Name: "CLASS.mp3",
-  },
-  { id: "FLASH", name: "Flashback 95.6", fileName: "FLASH.wav", mp3Name: "FLASH.mp3" },
-  { id: "JAH", name: "K-JAH Radio", fileName: "KJAH.wav", mp3Name: "KJAH.mp3" },
-  { id: "LIPS", name: "Lips 106", fileName: "LIPS.wav", mp3Name: "LIPS.mp3" },
-  { id: "RISE", name: "Rise FM", fileName: "RISE.wav", mp3Name: "RISE.mp3" },
-  { id: "MSX", name: "MSX FM", fileName: "MSX.wav", mp3Name: "MSX.mp3" },
-  {
-    id: "CHATTERBOX",
-    name: "Chatterbox FM",
-    fileName: "CHAT.wav",
-    mp3Name: "CHAT.mp3",
-  },
-  { id: "GAME", name: "Game Radio", fileName: "GAME.wav", mp3Name: "GAME.mp3" },
+  { id: "HEAD", name: "Head Radio", mp3Name: "HEAD.mp3" },
+  { id: "DOUBLE_CLEF", name: "Double Clef FM", mp3Name: "CLASS.mp3" },
+  { id: "FLASH", name: "Flashback 95.6", mp3Name: "FLASH.mp3" },
+  { id: "JAH", name: "K-JAH Radio", mp3Name: "KJAH.mp3" },
+  { id: "LIPS", name: "Lips 106", mp3Name: "LIPS.mp3" },
+  { id: "RISE", name: "Rise FM", mp3Name: "RISE.mp3" },
+  { id: "MSX", name: "MSX FM", mp3Name: "MSX.mp3" },
+  { id: "CHATTERBOX", name: "Chatterbox FM", mp3Name: "CHAT.mp3" },
+  { id: "GAME", name: "Game Radio", mp3Name: "GAME.mp3" },
 ];
 
 const GAME_LIBRARY_FOLDERS = {
@@ -59,50 +47,32 @@ const els = {
   player: document.getElementById("player"),
 };
 
-function getStationFileVariants(station) {
-  const wav = station.fileName;
-  const mp3 = station.mp3Name || station.fileName.replace(/\.wav$/i, ".mp3");
-  return { wav, mp3 };
+function getStationMp3Name(station) {
+  return station.mp3Name;
 }
 
-function describeExpectedFilesPlain(station) {
-  const { wav, mp3 } = getStationFileVariants(station);
-  if (mp3.toLowerCase() !== wav.toLowerCase()) {
-    return `${mp3} (preferred) or ${wav}`;
-  }
-  return wav;
+function describeExpectedFilePlain(station) {
+  return getStationMp3Name(station);
 }
 
-function describeExpectedFilesHtml(station) {
-  const { wav, mp3 } = getStationFileVariants(station);
-  if (mp3.toLowerCase() !== wav.toLowerCase()) {
-    return `<code>${mp3}</code> (preferred) or <code>${wav}</code>`;
-  }
-  return `<code>${wav}</code>`;
+function describeExpectedFileHtml(station) {
+  return `<code>${getStationMp3Name(station)}</code>`;
 }
 
 function describeExpectedFilePathsPlain(station, folderPath) {
   if (!folderPath) {
-    return describeExpectedFilesPlain(station);
+    return describeExpectedFilePlain(station);
   }
   const base = folderPath.endsWith("/") ? folderPath : `${folderPath}/`;
-  const { wav, mp3 } = getStationFileVariants(station);
-  if (mp3.toLowerCase() !== wav.toLowerCase()) {
-    return `${base}${mp3} (preferred) or ${base}${wav}`;
-  }
-  return `${base}${wav}`;
+  return `${base}${getStationMp3Name(station)}`;
 }
 
 function describeExpectedFilePathsHtml(station, folderPath) {
   if (!folderPath) {
-    return describeExpectedFilesHtml(station);
+    return describeExpectedFileHtml(station);
   }
   const base = folderPath.endsWith("/") ? folderPath : `${folderPath}/`;
-  const { wav, mp3 } = getStationFileVariants(station);
-  if (mp3.toLowerCase() !== wav.toLowerCase()) {
-    return `<code>${base}${mp3}</code> (preferred) or <code>${base}${wav}</code>`;
-  }
-  return `<code>${base}${wav}</code>`;
+  return `<code>${base}${getStationMp3Name(station)}</code>`;
 }
 
 function formatClock(seconds) {
@@ -191,18 +161,14 @@ function renderStationManager() {
     <p class="info-text">
       Follow these steps to mirror the way GTA III keeps every station in sync with a shared broadcast clock.
     </p>
-    <ol class="instruction-list">
-      <li>Rip each radio station from your own copy of the game as an unmodified <code>.wav</code> file.</li>
-      <li>
-        Run <code>python tools/import_gta3_audio.py</code> (PowerShell and shell wrappers are in <code>/tools</code>) to convert
-        them into MP3s inside <code>${folderDisplay}</code>. You can also copy the original WAVs manually—keep the filenames
-        exactly as the game shipped (HEAD.mp3 / HEAD.wav, CLASS.mp3 / CLASS.wav, etc.).
-      </li>
-      <li>Press <strong>Scan GTA III folder</strong> to pull them in automatically, or upload individual files below.</li>
-    </ol>
-    <p class="info-text">
-      Stations found as MP3s are used immediately; WAVs fall back to the built-in decoder. Missing stations show in grey with a reminder of which file to add.
-    </p>
+      <ol class="instruction-list">
+        <li>Rip each radio station from your own copy of the game as an unmodified <code>.wav</code> file (HEAD.wav, CLASS.wav, etc.).</li>
+        <li>Run <code>python tools/import_gta3_audio.py</code> (PowerShell and shell wrappers live in <code>/tools</code>) to convert them into MP3s inside <code>${folderDisplay}</code>. The web player only loads these MP3 versions.</li>
+        <li>Press <strong>Scan GTA III folder</strong> to pull them in automatically, or upload individual MP3s below.</li>
+      </ol>
+      <p class="info-text">
+        Any station that remains grey lists the <code>.mp3</code> filename you still need to provide.
+      </p>
     <div class="controls">
       <button id="scan-library">Scan GTA III folder</button>
       <button id="reset-offset">Reset broadcast clock</button>
@@ -233,15 +199,15 @@ function renderStationManager() {
     item.className = "station-item station-item--missing";
     item.dataset.stationId = station.id;
 
-    const info = document.createElement("div");
-    info.innerHTML = `
-      <strong>${station.name}</strong>
-      <div class="station-status" data-state="missing">File <code>${station.fileName}</code> expected in <code>${folderDisplay}</code>. Scan the folder or upload it below.</div>
-    `;
+      const info = document.createElement("div");
+      info.innerHTML = `
+        <strong>${station.name}</strong>
+        <div class="station-status" data-state="missing">File <code>${station.mp3Name}</code> expected in <code>${folderDisplay}</code>. Run the importer or add it below.</div>
+      `;
 
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.accept = ".mp3,.MP3,.wav,.WAV";
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.accept = ".mp3,.MP3";
     fileInput.addEventListener("change", (event) => onFileSelected(station, event));
 
     item.appendChild(info);
@@ -273,7 +239,7 @@ async function scanLocalLibrary(folderPath) {
   for (const station of state.selectedGame.stations) {
     const expectedHtml = folderForPaths
       ? describeExpectedFilePathsHtml(station, folderForPaths)
-      : describeExpectedFilesHtml(station);
+      : describeExpectedFileHtml(station);
     updateStationStatus(
       station.id,
       "pending",
@@ -282,22 +248,22 @@ async function scanLocalLibrary(folderPath) {
     try {
       await loadStationFromLibrary(station, folderPath);
     } catch (error) {
-      console.warn(`Failed to load ${station.fileName} from library`, error);
+      console.warn(`Failed to load ${station.mp3Name} from library`, error);
       const fallback = describeRecord(station.id);
       if (fallback) {
         updateStationStatus(station.id, "valid", fallback);
       } else {
         const expected = folderForPaths
           ? describeExpectedFilePathsHtml(station, folderForPaths)
-          : describeExpectedFilesHtml(station);
+          : describeExpectedFileHtml(station);
         const guidance = folderPath
-          ? `Files ${expected} are missing or unreadable.`
+          ? `File ${expected} is missing or unreadable.`
           : `Upload ${expected} manually using the button below.`;
         const details = error instanceof Error ? error.message : "Unknown error";
         updateStationStatus(
           station.id,
           "error",
-          `${guidance}<br />Decoder message: ${details}`
+          `${guidance}<br />Reason: ${details}`
         );
       }
     }
@@ -308,37 +274,26 @@ async function scanLocalLibrary(folderPath) {
 }
 
 async function resolveStationUrl(station, folderPath) {
-  const { wav, mp3 } = getStationFileVariants(station);
+  const mp3Name = getStationMp3Name(station);
   const base = folderPath ? `${folderPath}/` : "";
   const version = Date.now();
-  const attempts = [
-    { name: mp3, mime: "audio/mpeg" },
-    { name: wav, mime: "audio/wav" },
-  ];
-  const errors = [];
+  const candidatePath = `${base}${mp3Name}`;
+  const url = `${candidatePath}?v=${version}`;
 
-  for (const attempt of attempts) {
-    const candidatePath = `${base}${attempt.name}`;
-    const url = `${candidatePath}?v=${version}`;
-    try {
-      const response = await fetch(url, { method: "HEAD", cache: "no-store" });
-      if (response.ok) {
-        return { url, origin: candidatePath, mime: attempt.mime };
-      }
-      if (response.status !== 404) {
-        errors.push(`${attempt.name}: ${response.status} ${response.statusText}`);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push(`${attempt.name}: ${message}`);
+  try {
+    const response = await fetch(url, { method: "HEAD", cache: "no-store" });
+    if (response.ok) {
+      return { url, origin: candidatePath };
     }
+    if (response.status !== 404) {
+      throw new Error(`${response.status} ${response.statusText}`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to reach ${candidatePath}: ${message}`);
   }
 
-  if (errors.length > 0) {
-    throw new Error(errors.join("; "));
-  }
-
-  throw new Error(`Missing ${describeExpectedFilesPlain(station)}`);
+  throw new Error(`Missing ${describeExpectedFilePlain(station)}`);
 }
 
 async function loadStationFromLibrary(station, folderPath) {
@@ -347,72 +302,13 @@ async function loadStationFromLibrary(station, folderPath) {
   audio.loop = true;
   audio.preload = "metadata";
 
-  if (resolved.mime === "audio/mpeg") {
-    const metadataPromise = waitForMetadata(audio);
-    audio.src = resolved.url;
-    audio.load();
-    try {
-      await metadataPromise;
-    } catch (metadataError) {
-      throw metadataError;
-    }
-
-    const { wasCurrent, wasPlaying } = setStationRecord(station.id, {
-      audio,
-      duration: audio.duration,
-      source: "library",
-      origin: resolved.origin,
-      objectUrl: null,
-      note: "MP3 stream", // prefer MP3 playback
-      format: "mp3",
-    });
-
-    updateStationStatus(station.id, "valid", describeRecord(station.id));
-
-    if (!state.currentStationId) {
-      selectStation(station.id);
-    } else if (wasCurrent) {
-      syncActiveStation(wasPlaying);
-      updatePlayerControls();
-    } else {
-      updateStationSelector();
-      updatePlayerControls();
-    }
-    return;
-  }
-
-  let response;
-  try {
-    response = await fetch(resolved.url, { cache: "no-store" });
-  } catch (networkError) {
-    throw new Error(`Unable to reach ${resolved.origin}: ${networkError.message}`);
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `Request for ${resolved.origin} failed with ${response.status} ${response.statusText}`
-    );
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  let prepared;
-  try {
-    prepared = preparePlayableAudio(arrayBuffer, {
-      allowAdpcmDecode: state.selectedGame?.id === "gta3",
-    });
-  } catch (decodeError) {
-    throw new Error(`Could not decode ${station.fileName}: ${decodeError.message}`);
-  }
-
-  const objectUrl = URL.createObjectURL(prepared.blob);
   const metadataPromise = waitForMetadata(audio);
-  audio.src = objectUrl;
+  audio.src = resolved.url;
   audio.load();
 
   try {
     await metadataPromise;
   } catch (metadataError) {
-    URL.revokeObjectURL(objectUrl);
     throw metadataError;
   }
 
@@ -421,9 +317,9 @@ async function loadStationFromLibrary(station, folderPath) {
     duration: audio.duration,
     source: "library",
     origin: resolved.origin,
-    objectUrl,
-    note: prepared.note,
-    format: prepared.format,
+    objectUrl: null,
+    note: "MP3 stream",
+    format: "mp3",
   });
 
   updateStationStatus(station.id, "valid", describeRecord(station.id));
@@ -480,10 +376,9 @@ async function onFileSelected(station, event) {
   const file = event.target.files?.[0];
   if (!file) return;
 
-  const { wav, mp3 } = getStationFileVariants(station);
-  const accepted = new Set([wav.toLowerCase(), mp3.toLowerCase()]);
-  if (!accepted.has(file.name.toLowerCase())) {
-    const expected = describeExpectedFilesHtml(station);
+  const expectedName = getStationMp3Name(station).toLowerCase();
+  if (file.name.toLowerCase() !== expectedName) {
+    const expected = describeExpectedFileHtml(station);
     updateStationStatus(
       station.id,
       "error",
@@ -501,7 +396,7 @@ async function onFileSelected(station, event) {
     updateStationStatus(
       station.id,
       "error",
-      `Unable to read the uploaded file.<br />Decoder message: ${details}`
+      `Unable to read the uploaded file.<br />Reason: ${details}`
     );
   }
 }
@@ -514,54 +409,11 @@ async function loadStationFromUpload(station, file) {
   const lowerName = file.name.toLowerCase();
   const isMp3 = lowerName.endsWith(".mp3") || file.type === "audio/mpeg";
 
-  if (isMp3) {
-    const url = URL.createObjectURL(file);
-    const metadataPromise = waitForMetadata(audio);
-    audio.src = url;
-    audio.load();
-
-    try {
-      await metadataPromise;
-    } catch (error) {
-      URL.revokeObjectURL(url);
-      throw error;
-    }
-
-    const { wasCurrent, wasPlaying } = setStationRecord(station.id, {
-      audio,
-      duration: audio.duration,
-      source: "upload",
-      origin: file.name,
-      objectUrl: url,
-      note: "MP3 upload",
-      format: "mp3",
-    });
-
-    updateStationStatus(station.id, "valid", describeRecord(station.id));
-
-    if (!state.currentStationId) {
-      selectStation(station.id);
-    } else if (wasCurrent) {
-      syncActiveStation(wasPlaying);
-      updatePlayerControls();
-    } else {
-      updateStationSelector();
-      updatePlayerControls();
-    }
-    return;
+  if (!isMp3) {
+    throw new Error("Only MP3 uploads are supported. Use the importer to convert WAV files.");
   }
 
-  const arrayBuffer = await file.arrayBuffer();
-  let prepared;
-  try {
-    prepared = preparePlayableAudio(arrayBuffer, {
-      allowAdpcmDecode: state.selectedGame?.id === "gta3",
-    });
-  } catch (decodeError) {
-    throw new Error(`Could not decode ${file.name}: ${decodeError.message}`);
-  }
-
-  const url = URL.createObjectURL(prepared.blob);
+  const url = URL.createObjectURL(file);
   const metadataPromise = waitForMetadata(audio);
   audio.src = url;
   audio.load();
@@ -579,8 +431,8 @@ async function loadStationFromUpload(station, file) {
     source: "upload",
     origin: file.name,
     objectUrl: url,
-    note: prepared.note,
-    format: prepared.format,
+    note: "MP3 upload",
+    format: "mp3",
   });
 
   updateStationStatus(station.id, "valid", describeRecord(station.id));
@@ -677,9 +529,9 @@ function updateStationSelector() {
       button.title = "Station ready";
     } else if (folderPath) {
       const expectedPlain = describeExpectedFilePathsPlain(station, folderDisplay);
-      button.title = `Missing ${describeExpectedFilesPlain(station)}. Copy ${expectedPlain} or upload below.`;
+      button.title = `Missing ${describeExpectedFilePlain(station)}. Copy ${expectedPlain} or upload below.`;
     } else {
-      button.title = `Missing ${describeExpectedFilesPlain(station)}. Upload it below.`;
+      button.title = `Missing ${describeExpectedFilePlain(station)}. Upload it below.`;
     }
     button.addEventListener("click", () => selectStation(station.id));
     container.appendChild(button);
