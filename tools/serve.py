@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import cgi
 import http.server
 import json
 import pathlib
+import shutil
 import socketserver
 import sys
+import tempfile
 from typing import Any, Dict
 
 from import_gta3_audio import AudioImportError, import_gta3_audio
@@ -24,10 +27,16 @@ def make_handler(directory: pathlib.Path):
             sys.stdout.write("%s - - [%s] %s\n" % (self.client_address[0], self.log_date_time_string(), format % args))
 
         def do_POST(self) -> None:  # noqa: N802 (inherit signature)
-            if self.path != "/api/import-gta3":
-                self.send_error(404, "Unsupported endpoint")
+            if self.path == "/api/import-gta3":
+                self._handle_json_import()
+                return
+            if self.path == "/api/import-gta3-upload":
+                self._handle_upload_import()
                 return
 
+            self.send_error(404, "Unsupported endpoint")
+
+        def _handle_json_import(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length)
             try:
@@ -48,6 +57,51 @@ def make_handler(directory: pathlib.Path):
                 return
             except Exception as exc:  # pragma: no cover - safety net
                 self.log_error("import failed: %s", exc)
+                self._send_json(500, {"error": "Unexpected import failure"})
+                return
+
+            self._send_json(200, {"summary": summary})
+
+        def _handle_upload_import(self) -> None:
+            content_type = self.headers.get("Content-Type", "")
+            if "multipart/form-data" not in content_type:
+                self._send_json(400, {"error": "Expected multipart/form-data"})
+                return
+
+            environ = {
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": content_type,
+                "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
+            }
+
+            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ=environ)
+            files = form.getlist("files") if isinstance(form, cgi.FieldStorage) else []
+            if not files:
+                self._send_json(400, {"error": "No files uploaded"})
+                return
+
+            try:
+                with tempfile.TemporaryDirectory(prefix="gta3-upload-") as temp_root:
+                    temp_root_path = pathlib.Path(temp_root)
+                    for item in files:
+                        if not item.filename:
+                            continue
+                        relative_path = pathlib.PurePosixPath(item.filename)
+                        if ".." in relative_path.parts:
+                            continue
+                        destination = temp_root_path.joinpath(*relative_path.parts)
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        if hasattr(item.file, "seek"):
+                            item.file.seek(0)
+                        with destination.open("wb") as handle:
+                            shutil.copyfileobj(item.file, handle)
+
+                    summary = import_gta3_audio(temp_root_path)
+            except AudioImportError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except Exception as exc:  # pragma: no cover - safety net
+                self.log_error("import upload failed: %s", exc)
                 self._send_json(500, {"error": "Unexpected import failure"})
                 return
 
@@ -74,7 +128,9 @@ def run_server(bind: str, port: int, directory: pathlib.Path) -> None:
     with Server((bind, port), handler) as httpd:
         host, actual_port = httpd.server_address
         print(f"Serving {directory} at http://{host or '127.0.0.1'}:{actual_port}")
-        print("POST /api/import-gta3 with {'gta3Dir': '<path>'} to convert assets.")
+        print("Endpoints:")
+        print("  POST /api/import-gta3          -> JSON body {'gta3Dir': '<path>'}")
+        print("  POST /api/import-gta3-upload   -> multipart/form-data with files[] from directory picker")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

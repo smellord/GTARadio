@@ -3,7 +3,7 @@ const STORAGE_KEYS = {
   LAST_GAME: "gta-radio-last-game",
 };
 
-const IMPORT_ENDPOINT = "/api/import-gta3";
+const IMPORT_UPLOAD_ENDPOINT = "/api/import-gta3-upload";
 
 const GTA3_STATIONS = [
   { id: "HEAD", name: "Head Radio", mp3Name: "HEAD.mp3" },
@@ -41,6 +41,9 @@ const state = {
   currentStationId: null,
   offsetSeconds: Number(localStorage.getItem(STORAGE_KEYS.OFFSET)) || 0,
   tickHandle: null,
+  importSelection: [],
+  importDirectoryLabel: "",
+  importElements: null,
 };
 
 const els = {
@@ -175,17 +178,21 @@ function renderStationManager() {
     <ol class="instruction-list">
       <li>Rip each radio station from your own copy of the game as an unmodified <code>.wav</code> file (HEAD.wav, CLASS.wav, etc.).</li>
       <li>Start the dev server with <code>python tools/serve.py</code> so the importer endpoint is available.</li>
-      <li>Use the importer below to point at your GTA III <code>audio</code> directory. It copies or converts every station into <code>${folderDisplay}</code> as MP3.</li>
+      <li>Click <strong>Browse…</strong> below, select your GTA III installation folder (the game root), then import to copy or convert every station into <code>${folderDisplay}</code> as MP3.</li>
     </ol>
     <div class="importer" id="gta3-importer">
       <form id="gta3-import-form" class="importer__form">
-        <label class="importer__label" for="gta3-import-path">GTA III audio directory</label>
-        <div class="importer__row">
-          <input id="gta3-import-path" type="text" placeholder="C:\\Games\\GTA3\\audio" autocomplete="off" />
-          <button type="submit" id="gta3-import-submit">Import and convert</button>
+        <label class="importer__label" for="gta3-import-path">GTA III game directory</label>
+        <input id="gta3-import-picker" type="file" hidden webkitdirectory directory multiple />
+        <div class="importer__row importer__row--actions">
+          <input id="gta3-import-path" type="text" placeholder="Select your GTA III folder" autocomplete="off" readonly />
+          <div class="importer__buttons">
+            <button type="button" id="gta3-import-browse">Browse…</button>
+            <button type="submit" id="gta3-import-submit" disabled>Import and convert</button>
+          </div>
         </div>
         <p class="station-status" data-state="waiting" id="import-feedback">
-          Waiting for import. Once the server is running, submit the path to your GTA III <code>audio</code> folder.
+          Waiting for import. Launch <code>python tools/serve.py</code>, then browse to your GTA III game directory.
         </p>
       </form>
     </div>
@@ -201,8 +208,34 @@ function renderStationManager() {
     </div>
   `;
 
+  state.importSelection = [];
+  state.importDirectoryLabel = "";
+  state.importElements = null;
+
   const importForm = wrapper.querySelector("#gta3-import-form");
+  const picker = wrapper.querySelector("#gta3-import-picker");
+  const browseButton = wrapper.querySelector("#gta3-import-browse");
+  const importInput = wrapper.querySelector("#gta3-import-path");
+  const importSubmit = wrapper.querySelector("#gta3-import-submit");
+  const importFeedback = wrapper.querySelector("#import-feedback");
+
+  state.importElements = {
+    picker,
+    input: importInput,
+    submit: importSubmit,
+    feedback: importFeedback,
+  };
+
   importForm?.addEventListener("submit", (event) => onImportSubmit(event, folderPath));
+
+  browseButton?.addEventListener("click", () => {
+    if (picker) {
+      picker.value = "";
+      picker.click();
+    }
+  });
+
+  picker?.addEventListener("change", (event) => onDirectoryPicked(event));
 
   const refreshButton = wrapper.querySelector("#refresh-library");
   refreshButton?.addEventListener("click", () => scanLocalLibrary(folderPath));
@@ -247,7 +280,7 @@ function renderStationManager() {
   wrapper.appendChild(warning);
 
   els.stationManager.replaceChildren(wrapper);
-  scanLocalLibrary(folderPath);
+  loadImportCache(folderPath).finally(() => scanLocalLibrary(folderPath));
 }
 
 async function scanLocalLibrary(folderPath) {
@@ -295,58 +328,67 @@ async function scanLocalLibrary(folderPath) {
 
 async function onImportSubmit(event, folderPath) {
   event.preventDefault();
-  const form = event.currentTarget;
-  if (!form) return;
+  const importElements = state.importElements;
+  if (!importElements) return;
 
-  const input = form.querySelector("#gta3-import-path");
-  const submit = form.querySelector("#gta3-import-submit");
-  const feedback = form.querySelector("#import-feedback");
-  if (!input || !feedback || !submit) return;
+  const { submit, feedback, picker, input } = importElements;
+  if (!submit || !feedback) return;
 
-  const rawPath = input.value.trim();
-  if (!rawPath) {
+  if (!state.importSelection || state.importSelection.length === 0) {
     feedback.dataset.state = "error";
-    feedback.innerHTML = "Provide the full path to your GTA III <code>audio</code> folder.";
+    feedback.innerHTML = "Browse to your GTA III game directory before importing.";
     return;
   }
 
+  const formData = buildImportFormData(state.importSelection);
+  if (state.importDirectoryLabel) {
+    formData.append("label", state.importDirectoryLabel);
+  }
+
   feedback.dataset.state = "pending";
-  feedback.innerHTML = `Importing from <code>${escapeHtml(rawPath)}</code>...`;
+  feedback.innerHTML = "Uploading and converting audio…";
   submit.disabled = true;
 
-  let didImport = false;
+  let payload;
   try {
-    const payload = await requestServerImport(rawPath);
-    const summary = payload?.summary || {};
-    const message = formatImportSummary(summary);
-    const hasIssues = (summary.missing && summary.missing.length) || (summary.failures && summary.failures.length);
-    feedback.dataset.state = hasIssues ? "error" : "valid";
-    feedback.innerHTML = message;
-    didImport = true;
+    payload = await requestServerUpload(formData);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Import failed.";
     feedback.dataset.state = "error";
     feedback.innerHTML = escapeHtml(message);
-  } finally {
     submit.disabled = false;
+    return;
   }
 
-  if (didImport) {
-    await scanLocalLibrary(folderPath);
+  const summary = payload?.summary || {};
+  const message = formatImportSummary(summary);
+  const hasIssues = (summary.missing && summary.missing.length) || (summary.failures && summary.failures.length);
+  feedback.dataset.state = hasIssues ? "error" : "valid";
+  feedback.innerHTML = message;
+
+  if (picker) {
+    picker.value = "";
   }
+  state.importSelection = [];
+  submit.disabled = true;
+  if (input && state.importDirectoryLabel) {
+    input.value = state.importDirectoryLabel;
+  }
+
+  await scanLocalLibrary(folderPath);
+  await loadImportCache(folderPath, { force: true });
 }
 
-async function requestServerImport(gtaDir) {
+async function requestServerUpload(formData) {
   let response;
   try {
-    response = await fetch(IMPORT_ENDPOINT, {
+    response = await fetch(IMPORT_UPLOAD_ENDPOINT, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify({ gta3Dir: gtaDir }),
+      body: formData,
     });
   } catch (networkError) {
-    throw new Error("Unable to reach the import endpoint. Start the server via python tools/serve.py and try again.");
+    throw new Error("Unable to reach the import endpoint. Start the dev server via python tools/serve.py.");
   }
 
   const contentType = response.headers.get("content-type") || "";
@@ -359,6 +401,9 @@ async function requestServerImport(gtaDir) {
   }
 
   if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error("Import endpoint unavailable. Run python tools/serve.py and reload the page.");
+    }
     const message = payload?.error || `Import failed with HTTP ${response.status}`;
     throw new Error(message);
   }
@@ -372,14 +417,25 @@ function formatImportSummary(summary) {
   const converted = summary.converted ?? 0;
   const copied = summary.copied ?? 0;
   const target = summary.target ? `<code>${escapeHtml(summary.target)}</code>` : "the project sounds folder";
+  const audioDir = summary.audio_dir ? `<code>${escapeHtml(summary.audio_dir)}</code>` : null;
+  const sourceRoot = summary.source_root ? `<code>${escapeHtml(summary.source_root)}</code>` : null;
   const parts = [
     `${found}/${expected} stations ready`,
     `${converted} converted`,
     `${copied} copied`,
     `Output: ${target}`,
   ];
+  if (sourceRoot) {
+    parts.push(`Game: ${sourceRoot}`);
+  }
+  if (audioDir) {
+    parts.push(`Audio: ${audioDir}`);
+  }
   if (summary.tool) {
     parts.push(`Tool: ${escapeHtml(summary.tool)}`);
+  }
+  if (summary.cache_file) {
+    parts.push(`Cache: <code>${escapeHtml(summary.cache_file)}</code>`);
   }
   if (summary.missing && summary.missing.length) {
     parts.push(`Missing: ${summary.missing.map((stem) => `<code>${escapeHtml(stem)}</code>`).join(", ")}`);
@@ -388,6 +444,107 @@ function formatImportSummary(summary) {
     parts.push(`Failed: ${summary.failures.map((stem) => `<code>${escapeHtml(stem)}</code>`).join(", ")}`);
   }
   return parts.join(" • ");
+}
+
+function buildImportFormData(files) {
+  const formData = new FormData();
+  for (const file of files) {
+    const relative = file.webkitRelativePath || file.name;
+    formData.append("files", file, relative);
+  }
+  return formData;
+}
+
+function deriveDirectoryLabel(files) {
+  if (!files || !files.length) return "";
+  const paths = files
+    .map((file) => file.webkitRelativePath || file.name)
+    .filter(Boolean);
+  if (!paths.length) return "";
+  const segmentsList = paths.map((path) => path.split(/[\\/]+/));
+  let prefix = segmentsList[0];
+  for (const segments of segmentsList.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < segments.length && prefix[i] === segments[i]) {
+      i += 1;
+    }
+    prefix = prefix.slice(0, i);
+    if (!prefix.length) break;
+  }
+  if (prefix.length > 1) {
+    const last = prefix[prefix.length - 1];
+    if (last && last.toLowerCase() === "audio") {
+      prefix = prefix.slice(0, -1);
+    }
+  }
+  return prefix.join("/");
+}
+
+function onDirectoryPicked(event) {
+  const files = Array.from(event?.target?.files || []);
+  const importElements = state.importElements;
+  if (!importElements) return;
+
+  const { input, submit, feedback } = importElements;
+  if (!submit || !feedback) return;
+
+  if (!files.length) {
+    state.importSelection = [];
+    state.importDirectoryLabel = "";
+    if (input) input.value = "";
+    submit.disabled = true;
+    feedback.dataset.state = "waiting";
+    feedback.innerHTML = "Selection cleared. Browse to your GTA III game directory.";
+    return;
+  }
+
+  const audioFiles = files.filter((file) => /\.(mp3|wav)$/i.test(file.name));
+  const label = deriveDirectoryLabel(audioFiles.length ? audioFiles : files);
+  state.importDirectoryLabel = label;
+  if (input) {
+    input.value = label || (audioFiles.length ? `${audioFiles.length} files selected` : files[0].name);
+  }
+
+  if (!audioFiles.length) {
+    state.importSelection = [];
+    submit.disabled = true;
+    feedback.dataset.state = "error";
+    feedback.innerHTML = "No WAV or MP3 files found. Select your GTA III installation folder.";
+    return;
+  }
+
+  state.importSelection = audioFiles;
+  submit.disabled = false;
+  feedback.dataset.state = "pending";
+  const count = audioFiles.length;
+  feedback.innerHTML = `Ready to import ${count} file${count === 1 ? "" : "s"}. Click <strong>Import and convert</strong>.`;
+}
+
+async function loadImportCache(folderPath, options = {}) {
+  const { force = false } = options;
+  if (!folderPath) return;
+  const feedback = document.getElementById("import-feedback");
+  if (!feedback) return;
+  if (!force) {
+    const currentState = feedback.dataset.state;
+    if (currentState && currentState !== "waiting") {
+      return;
+    }
+  }
+
+  try {
+    const response = await fetch(`${folderPath}/import-cache.json?v=${Date.now()}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    feedback.dataset.state = "valid";
+    feedback.innerHTML = formatImportSummary(data);
+  } catch (error) {
+    if (force) {
+      console.warn("Unable to read import cache", error);
+    }
+  }
 }
 
 async function resolveStationUrl(station, folderPath) {

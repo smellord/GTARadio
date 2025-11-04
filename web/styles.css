@@ -189,6 +189,10 @@ body {
   gap: 0.75rem;
 }
 
+.importer__row--actions {
+  align-items: stretch;
+}
+
 .importer__row input {
   flex: 1 1 260px;
   min-width: 200px;
@@ -203,14 +207,39 @@ body {
   color: #64748b;
 }
 
+.importer__row input[readonly] {
+  cursor: default;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.importer__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+#gta3-import-browse,
 #gta3-import-submit {
   padding: 0.65rem 1rem;
   border-radius: 8px;
   border: none;
-  background: linear-gradient(135deg, #4ade80, #22d3ee);
-  color: #0f172a;
   font-weight: 600;
   cursor: pointer;
+}
+
+#gta3-import-browse {
+  background: rgba(148, 163, 184, 0.3);
+  color: #f8fafc;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+}
+
+#gta3-import-browse:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+#gta3-import-submit {
+  background: linear-gradient(135deg, #4ade80, #22d3ee);
+  color: #0f172a;
 }
 
 #gta3-import-submit:disabled {

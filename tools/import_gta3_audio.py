@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import pathlib
 import shutil
@@ -12,6 +13,8 @@ import sys
 from typing import Dict, Iterable, List, Optional, Tuple
 
 STATIONS = ["HEAD", "CLASS", "KJAH", "RISE", "LIPS", "GAME", "MSX", "FLASH", "CHAT"]
+
+CACHE_FILE = "import-cache.json"
 
 
 class AudioImportError(RuntimeError):
@@ -41,6 +44,55 @@ def find_src(audio_dir: pathlib.Path, stem_upper: str) -> Optional[pathlib.Path]
 
 def ensure_dir(path: pathlib.Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def count_station_matches(directory: pathlib.Path) -> int:
+    if not directory.exists() or not directory.is_dir():
+        return 0
+    count = 0
+    for stem in STATIONS:
+        for ext in (".mp3", ".wav"):
+            if (directory / f"{stem}{ext}").exists():
+                count += 1
+                break
+    return count
+
+
+def locate_audio_directory(root: pathlib.Path) -> Tuple[pathlib.Path, int]:
+    """Find the GTA III audio directory starting from the provided root."""
+
+    root = pathlib.Path(root).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise AudioImportError(f"Directory not found: {root}")
+
+    candidates: List[Tuple[int, pathlib.Path]] = []
+
+    direct_matches = count_station_matches(root)
+    if direct_matches:
+        candidates.append((direct_matches, root))
+
+    for name in ("audio", "Audio", "AUDIO", "AudioPC", "audiopc"):
+        candidate = root / name
+        matches = count_station_matches(candidate)
+        if matches:
+            candidates.append((matches, candidate))
+
+    if not candidates:
+        for path in root.rglob("*"):
+            if not path.is_dir():
+                continue
+            matches = count_station_matches(path)
+            if matches:
+                candidates.append((matches, path))
+
+    if not candidates:
+        raise AudioImportError(
+            "Unable to locate GTA III audio files under the provided directory. Select the game folder that contains the Audio assets."
+        )
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_matches, best_path = candidates[0]
+    return best_path, best_matches
 
 
 def transcode_to_mp3(tool: str, src: pathlib.Path, dst: pathlib.Path) -> Tuple[int, List[str]]:
@@ -80,14 +132,13 @@ def resolve_tool(preferred: Optional[str] = None) -> Optional[str]:
 
 
 def import_gta3_audio(
-    audio_dir: pathlib.Path,
+    game_root: pathlib.Path,
     *,
     target_dir: Optional[pathlib.Path] = None,
     preferred_tool: Optional[str] = None,
 ) -> Dict[str, object]:
-    audio_dir = pathlib.Path(audio_dir).expanduser()
-    if not audio_dir.exists() or not audio_dir.is_dir():
-        raise AudioImportError(f"Audio directory not found: {audio_dir}")
+    game_root = pathlib.Path(game_root).expanduser()
+    audio_dir, audio_matches = locate_audio_directory(game_root)
 
     repo_root = pathlib.Path(__file__).resolve().parents[1]
     target_dir = target_dir or repo_root / "web" / "sounds" / "gta" / "3"
@@ -109,6 +160,9 @@ def import_gta3_audio(
         "details": [],
         "target": str(target_dir),
         "tool": tool,
+        "source_root": str(game_root.resolve()),
+        "audio_dir": str(audio_dir),
+        "audio_matches": audio_matches,
     }
 
     for stem in STATIONS:
@@ -146,7 +200,29 @@ def import_gta3_audio(
             summary["failures"].append(stem)
         summary["details"].append(record)
 
+    write_import_cache(target_dir, summary)
     return summary
+
+
+def write_import_cache(target_dir: pathlib.Path, summary: Dict[str, object]) -> None:
+    payload = {
+        "generated_at": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "source_root": summary.get("source_root"),
+        "audio_dir": summary.get("audio_dir"),
+        "tool": summary.get("tool"),
+        "expected": summary.get("expected"),
+        "found": summary.get("found"),
+        "copied": summary.get("copied"),
+        "converted": summary.get("converted"),
+        "missing": summary.get("missing"),
+        "failures": summary.get("failures"),
+        "details": summary.get("details"),
+    }
+
+    cache_path = pathlib.Path(target_dir) / CACHE_FILE
+    ensure_dir(cache_path.parent)
+    cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    summary["cache_file"] = str(cache_path)
 
 
 def format_summary(summary: Dict[str, object]) -> str:
@@ -157,6 +233,9 @@ def format_summary(summary: Dict[str, object]) -> str:
         f"Transcoded: {summary['converted']}",
         f"Target dir: {summary['target']}",
         f"Tool:       {summary['tool']}",
+        f"Source dir: {summary.get('source_root', 'unknown')}",
+        f"Audio dir:  {summary.get('audio_dir', 'unknown')}",
+        f"Audio hits: {summary.get('audio_matches', 0)}",
     ]
     missing = summary.get("missing") or []
     failures = summary.get("failures") or []
@@ -173,7 +252,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     )
     parser.add_argument(
         "--gta3-dir",
-        help="Path to the GTA III audio directory (contains HEAD.wav, etc.)",
+        help="Path to the GTA III game directory (contains the Audio folder)",
     )
     parser.add_argument(
         "--json",
@@ -186,7 +265,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    gta_dir = args.gta3_dir or input("Enter path to GTA III audio directory: ").strip().strip('"')
+    gta_dir = args.gta3_dir or input("Enter path to the GTA III game directory: ").strip().strip('"')
 
     try:
         summary = import_gta3_audio(gta_dir, preferred_tool=args.tool)
