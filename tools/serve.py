@@ -1,256 +1,451 @@
 #!/usr/bin/env python3
-# Fully compatible with Python 3.8–3.13 (no cgi module)
+"""Development server with GTA III audio import endpoint."""
 
-VERBOSE = False
+from __future__ import annotations
+
+import argparse
+import json
+import pathlib
+import socketserver
+import sys
+import tempfile
+import threading
+import time
+import uuid
+from email.parser import BytesParser
+from email.policy import default as default_policy
+from typing import Any, Dict, List, Tuple
+from urllib.parse import parse_qs, urlparse
+
+try:  # Python 3.13 removes the cgi module which http.server imported historically
+    import http.server
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised on Python 3.13+
+    if exc.name != "cgi":
+        raise
+
+    import types
+
+    cgi_stub = types.ModuleType("cgi")
+
+    def _parse_header(value: str) -> Tuple[str, Dict[str, str]]:
+        value = value or ""
+        parts = [part.strip() for part in value.split(";") if part.strip()]
+        if not parts:
+            return "", {}
+        main = parts[0]
+        params: Dict[str, str] = {}
+        for segment in parts[1:]:
+            if "=" not in segment:
+                continue
+            key, raw_val = segment.split("=", 1)
+            cleaned = raw_val.strip().strip('"')
+            params[key.strip().lower()] = cleaned
+        return main, params
+
+    def _unsupported(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("cgi functionality is unavailable on this Python version")
+
+    class _FieldStorage:  # pragma: no cover - placeholder for compatibility
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            _unsupported()
+
+    cgi_stub.parse_header = _parse_header  # type: ignore[attr-defined]
+    cgi_stub.parse_multipart = _unsupported  # type: ignore[attr-defined]
+    cgi_stub.FieldStorage = _FieldStorage  # type: ignore[attr-defined]
+    sys.modules["cgi"] = cgi_stub
+
+    import http.server  # type: ignore[no-redef]
+
+from import_gta3_audio import AudioImportError, STATIONS, import_gta3_audio
 
 
-import argparse, json, pathlib, shutil, subprocess, sys
-from urllib.parse import urlparse, parse_qs
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+JobState = Dict[str, Any]
+JOB_REGISTRY: Dict[str, JobState] = {}
+JOB_LOCK = threading.Lock()
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-WEB_ROOT   = REPO_ROOT / "web"
-TARGET_DIR = WEB_ROOT / "sounds" / "gta" / "3"
 
-STATIONS   = ["HEAD","CLASS","KJAH","RISE","LIPS","GAME","MSX","FLASH","CHAT"]
+def parse_multipart_form_data(body: bytes, content_type: str) -> Tuple[List[Tuple[str, bytes]], Dict[str, str]]:
+    if "boundary=" not in content_type:
+        raise ValueError("Missing multipart boundary")
 
-def log(*a):
-    print("[serve.py]", *a, flush=True)
+    header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
+    parser = BytesParser(policy=default_policy)
+    message = parser.parsebytes(header + body)
 
-def ensure_dir(p):
-    p.mkdir(parents=True, exist_ok=True)
+    if not message.is_multipart():
+        raise ValueError("Multipart payload expected")
 
-def which_prog(cands):
-    for c in cands:
-        p = shutil.which(c)
-        if p:
-            return p
-    return None
+    files: List[Tuple[str, bytes]] = []
+    fields: Dict[str, str] = {}
 
-def find_src(audio_dir: pathlib.Path, station):
-    station_lower = station.lower()
-    for ext in (".mp3", ".wav"):
-        f = audio_dir / f"{station}{ext}"
-        if f.exists():
-            return f
-    # fallback: case-insensitive match
-    for ext in (".mp3", ".wav"):
-        for f in audio_dir.glob(f"*{ext}"):
-            if f.stem.lower() == station_lower:
-                return f
-    return None
-
-def transcode_to_mp3(tool, src, dst):
-    cmd = [
-        tool, "-y",
-        "-i", str(src),
-        "-ar", "44100",
-        "-ac", "2",
-        "-c:a", "libmp3lame",
-        "-q:a", "2",
-        str(dst)
-    ]
-    return subprocess.call(cmd)
-
-def scan_gta3(audio_dir):
-    out = {"ok": True, "source": str(audio_dir), "stations": [], "found": 0, "missing": []}
-    for s in STATIONS:
-        src = find_src(audio_dir, s)
-        if src:
-            out["stations"].append({"station": s, "source": str(src)})
-            out["found"] += 1
-        else:
-            out["stations"].append({"station": s, "source": None})
-            out["missing"].append(s)
-    return out
-
-def import_gta3(audio_dir):
-    ensure_dir(TARGET_DIR)
-    tool = which_prog(["ffmpeg", "ffmpeg.exe"]) or which_prog(["avconv"])
-    if not tool:
-        return {"ok": False, "error": "ffmpeg not found. Install from https://ffmpeg.org/download.html"}
-
-    out = {"ok": False, "source": str(audio_dir), "target": str(TARGET_DIR), "copied": [], "encoded": [], "missing": [], "errors": []}
-
-    for s in STATIONS:
-        src = find_src(audio_dir, s)
-        if not src:
-            out["missing"].append(s)
+    for part in message.iter_parts():
+        disposition = part.get("Content-Disposition")
+        if not disposition:
             continue
-        dst = TARGET_DIR / f"{s}.mp3"
+
+        name = part.get_param("name", header="content-disposition")
+        filename = part.get_filename()
+        payload = part.get_payload(decode=True) or b""
+
+        if filename:
+            files.append((filename, payload))
+        elif name:
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                fields[name] = payload.decode(charset, errors="replace")
+            except LookupError:
+                fields[name] = payload.decode("utf-8", errors="replace")
+
+    return files, fields
+
+
+def browse_for_directory(initial: str | None = None) -> str | None:
+    try:
+        import tkinter  # type: ignore
+        from tkinter import filedialog
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("Directory picker unavailable: install tkinter or run locally with a GUI") from exc
+
+    root = tkinter.Tk()
+    root.withdraw()
+    try:
+        root.update()
+    except Exception:
+        pass
+
+    try:
+        selection = filedialog.askdirectory(initialdir=initial or "", title="Select your GTA III folder")
+    finally:
         try:
-            if src.suffix.lower() == ".mp3":
-                shutil.copy2(src, dst)
-                out["copied"].append(s)
-            else:
-                rc = transcode_to_mp3(tool, src, dst)
-                if rc == 0:
-                    out["encoded"].append(s)
-                else:
-                    out["errors"].append({"station": s, "code": rc})
-        except Exception as e:
-            out["errors"].append({"station": s, "error": str(e)})
-
-    out["ok"] = bool(out["copied"] or out["encoded"])
-    return out
-
-def extract_gta3_dir(path, headers, raw):
-    """Accept gta3_dir from JSON, url-encoded, multipart, OR query string."""
-    candidates = ["gta3_dir","gta3Dir","path","dir","audioDir","gameDir"]
-    parsed = urlparse(path)
-    qs = parse_qs(parsed.query or "")
-    for k in candidates:
-        if k in qs and qs[k]:
-            return qs[k][0].strip().strip('"')
-
-    ctype = (headers.get("Content-Type") or "").lower()
-    text = raw.decode("utf-8", errors="ignore") if raw else ""
-
-    # JSON
-    if "application/json" in ctype:
-        try:
-            obj = json.loads(text or "{}")
-            for k in candidates:
-                if k in obj and obj[k]:
-                    return str(obj[k]).strip().strip('"')
-        except:
+            root.destroy()
+        except Exception:
             pass
 
-    # x-www-form-urlencoded
-    if "application/x-www-form-urlencoded" in ctype:
-        q = parse_qs(text)
-        for k in candidates:
-            if k in q and q[k]:
-                return q[k][0].strip().strip('"')
+    return selection or None
 
-    # multipart form (simple field-only parse)
-    if "multipart/form-data" in ctype and "boundary=" in ctype:
-        boundary = ctype.split("boundary=",1)[1]
-        boundary_bytes = ("--" + boundary).encode("utf-8")
-        parts = raw.split(boundary_bytes)
-        for p in parts:
-            if b"\r\n\r\n" not in p:
-                continue
-            hdr, val = p.split(b"\r\n\r\n",1)
-            hdr = hdr.decode(errors="ignore").lower()
-            val = val.strip().decode(errors="ignore")
-            for k in candidates:
-                if f'name="{k}"' in hdr:
-                    return val.strip().strip('"')
 
-    return ""
+def _register_job(job: JobState) -> JobState:
+    with JOB_LOCK:
+        JOB_REGISTRY[job["id"]] = job
+    return job
 
-class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *a, directory=str(WEB_ROOT), **kw):
-        super().__init__(*a, directory=directory, **kw)
 
-    def _json(self, status=200):
-        self.send_response(status)
-        self.send_header("Content-Type","application/json")
-        self.send_header("Access-Control-Allow-Origin","*")
-        self.send_header("Access-Control-Allow-Methods","GET,POST,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers","Content-Type")
-        self.end_headers()
+def _get_job(job_id: str) -> JobState | None:
+    with JOB_LOCK:
+        job = JOB_REGISTRY.get(job_id)
+        if not job:
+            return None
+        return json.loads(json.dumps(job))
 
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin","*")
-        self.send_header("Access-Control-Allow-Methods","GET,POST,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers","Content-Type")
-        self.end_headers()
 
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        if path == "/api/ping":
-            self._json(200); self.wfile.write(b'{"ok":true,"pong":true}'); return
-
-        # SCAN (unchanged)
-        if path in ("/api/scan","/api/gta/scan"):
-            qs = parse_qs(parsed.query or "")
-            gta3_dir = (qs.get("gta3_dir") or [""])[0].strip().strip('"')
-            log("SCAN:", gta3_dir)
-            audio_dir = pathlib.Path(gta3_dir)
-            if not audio_dir.exists() or not audio_dir.is_dir():
-                self._json(404); self.wfile.write(json.dumps({"ok":False,"error":"Directory not found"}).encode()); return
-            out = scan_gta3(audio_dir)
-            self._json(200); self.wfile.write(json.dumps(out, indent=2).encode()); return
-
-        # NEW: IMPORT via GET with query ?gta3_dir=...
-        if path in ("/api/import","/api/gta/import","/api/import-gta","/api/import-gta3-upload"):
-            qs = parse_qs(parsed.query or "")
-            gta3_dir = (qs.get("gta3_dir") or [""])[0].strip().strip('"')
-            log("IMPORT[GET]:", path, gta3_dir)
-            if not gta3_dir:
-                self._json(400); self.wfile.write(b'{"ok":false,"error":"gta3_dir is required"}'); return
-            audio_dir = pathlib.Path(gta3_dir)
-            if not audio_dir.exists() or not audio_dir.is_dir():
-                self._json(404); self.wfile.write(json.dumps({"ok":False,"error":"Directory not found"}).encode()); return
-            out = import_gta3(audio_dir)
-            self._json(200 if out.get("ok") else 500); self.wfile.write(json.dumps(out, indent=2).encode()); return
-
-        # otherwise serve static
-        return super().do_GET()
-
-    def do_POST(self):
-        
-        if VERBOSE:
-            print("\n------ POST REQUEST ------")
-            print("PATH:", self.path)
-            print("HEADERS:")
-        for k,v in self.headers.items():
-            print(" ", k+":", v)
-            length = int(self.headers.get("Content-Length","0") or "0")
-            raw_preview = self.rfile.peek(length)[:200] if length > 0 else b""
-            print("RAW (first 200 bytes):", raw_preview)
-            print("--------------------------\n")
-
-        
-        parsed = urlparse(self.path)
-        path = parsed.path
-        IMPORT_PATHS = {"/api/import","/api/gta/import","/api/import-gta","/api/import-gta3-upload"}
-
-        if path in IMPORT_PATHS:
-            length = int(self.headers.get("Content-Length","0") or "0")
-            raw = self.rfile.read(length) if length>0 else b""
-
-            # Try body (json/form/multipart) AND fall back to query string
-            gta3_dir = extract_gta3_dir(self.path, self.headers, raw)
-            if not gta3_dir:
-                qs = parse_qs(parsed.query or "")
-                gta3_dir = (qs.get("gta3_dir") or [""])[0].strip().strip('"')
-
-            log("IMPORT[POST]:", path, gta3_dir)
-
-            if not gta3_dir:
-                self._json(400); self.wfile.write(b'{"ok":false,"error":"gta3_dir is required"}'); return
-
-            audio_dir = pathlib.Path(gta3_dir)
-            if not audio_dir.exists() or not audio_dir.is_dir():
-                self._json(404); self.wfile.write(json.dumps({"ok":False,"error":"Directory not found"}).encode()); return
-
-            out = import_gta3(audio_dir)
-            self._json(200 if out.get("ok") else 500)
-            self.wfile.write(json.dumps(out, indent=2).encode())
+def _update_job(job_id: str, **fields: Any) -> None:
+    with JOB_LOCK:
+        job = JOB_REGISTRY.get(job_id)
+        if not job:
             return
+        job.update(fields)
+        job["updated_at"] = time.time()
 
-        # unknown POST
-        self._json(404); self.wfile.write(b'{"ok":false,"error":"Unknown endpoint"}')
 
-def main():
-    
-    global VERBOSE
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8080)
-    ap.add_argument("-v", "--verbose", action="store_true")
-    args = ap.parse_args()
-    ensure_dir(TARGET_DIR)
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-    print(f"\nServing: {WEB_ROOT}\nOpen:    http://localhost:{args.port}\n")
-    server.serve_forever()
-    
-    VERBOSE = args.verbose
+def _create_job(path: pathlib.Path) -> JobState:
+    job_id = uuid.uuid4().hex
+    job: JobState = {
+        "id": job_id,
+        "status": "pending",
+        "gta3_dir": str(path),
+        "progress": 0,
+        "total": len(STATIONS),
+        "records": {},
+        "summary": None,
+        "error": None,
+        "started_at": time.time(),
+        "updated_at": time.time(),
+    }
+    return _register_job(job)
+
+
+def _run_import_job(job_id: str, game_root: pathlib.Path) -> None:
+    def progress_hook(event: Dict[str, Any]) -> None:
+        if event.get("type") == "station":
+            record = event.get("record", {})
+            summary = event.get("summary", {})
+            stem = record.get("stem")
+            if stem:
+                with JOB_LOCK:
+                    job = JOB_REGISTRY.get(job_id)
+                    if not job:
+                        return
+                    current = int(job.get("progress", 0))
+                    job["progress"] = max(int(record.get("index", 0)), current)
+                    records = job.setdefault("records", {})
+                    records[stem] = record
+                    job["partial_summary"] = summary
+                    job["updated_at"] = time.time()
+        elif event.get("type") == "complete":
+            summary = event.get("summary", {})
+            _update_job(job_id, status="completed", summary=summary, progress=len(STATIONS))
+
+    try:
+        _update_job(job_id, status="running")
+        summary = import_gta3_audio(game_root, progress_callback=progress_hook)
+        _update_job(job_id, status="completed", summary=summary, progress=len(STATIONS))
+    except AudioImportError as exc:
+        _update_job(job_id, status="failed", error=str(exc))
+    except Exception as exc:  # pragma: no cover - safety net
+        _update_job(job_id, status="failed", error=f"Unexpected failure: {exc}")
+
+
+def start_import_job(path: str) -> JobState:
+    game_root = pathlib.Path(path).expanduser()
+    job = _create_job(game_root)
+
+    thread = threading.Thread(target=_run_import_job, args=(job["id"], game_root), daemon=True)
+    thread.start()
+    return _get_job(job["id"]) or job
+
+
+def make_handler(directory: pathlib.Path, *, verbose: bool = False):
+    serve_directory = str(directory)
+
+    class RequestHandler(http.server.SimpleHTTPRequestHandler):
+        directory = serve_directory
+        server_version = "GTARadioServer/1.0"
+        protocol_version = "HTTP/1.1"
+        verbose_mode = verbose
+
+        def log_message(self, format: str, *args: Any) -> None:
+            sys.stdout.write("%s - - [%s] %s\n" % (self.client_address[0], self.log_date_time_string(), format % args))
+
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/import-gta3-status":
+                self._handle_import_status(parsed)
+                return
+            if parsed.path == "/api/import-gta3-start":
+                self._handle_import_start(parsed)
+                return
+            if parsed.path == "/api/import-gta3-browse":
+                self._handle_browse_directory()
+                return
+
+            super().do_GET()
+
+        def do_POST(self) -> None:  # noqa: N802 (inherit signature)
+            if self.path == "/api/import-gta3":
+                self._handle_json_import()
+                return
+            if self.path == "/api/import-gta3-upload":
+                self._handle_upload_import()
+                return
+            if self.path == "/api/import-gta3-start":
+                self._handle_import_start()
+                return
+            if self.path == "/api/import-gta3-browse":
+                self._handle_browse_directory()
+                return
+
+            self.send_error(404, "Unsupported endpoint")
+
+        def _handle_json_import(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length)
+            try:
+                payload = json.loads(raw.decode("utf-8")) if raw else {}
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "Invalid JSON payload"})
+                return
+
+            gta_dir = payload.get("gta3Dir") or payload.get("path")
+            if not gta_dir or not isinstance(gta_dir, str):
+                self._send_json(400, {"error": "Missing 'gta3Dir' string"})
+                return
+
+            try:
+                summary = import_gta3_audio(gta_dir)
+            except AudioImportError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except Exception as exc:  # pragma: no cover - safety net
+                self.log_error("import failed: %s", exc)
+                self._send_json(500, {"error": "Unexpected import failure"})
+                return
+
+            self._send_json(200, {"summary": summary})
+
+        def _handle_upload_import(self) -> None:
+            content_type = self.headers.get("Content-Type", "")
+            if "multipart/form-data" not in content_type:
+                self._send_json(400, {"error": "Expected multipart/form-data"})
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._send_json(400, {"error": "Invalid Content-Length"})
+                return
+
+            if length <= 0:
+                self._send_json(400, {"error": "Empty request body"})
+                return
+
+            body = self.rfile.read(length)
+
+            try:
+                files, _fields = parse_multipart_form_data(body, content_type)
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+
+            if not files:
+                self._send_json(400, {"error": "No files uploaded"})
+                return
+
+            try:
+                with tempfile.TemporaryDirectory(prefix="gta3-upload-") as temp_root:
+                    temp_root_path = pathlib.Path(temp_root)
+                    for filename, payload in files:
+                        if not filename:
+                            continue
+                        safe_name = filename.replace("\\", "/")
+                        relative_path = pathlib.PurePosixPath(safe_name)
+                        parts = [part for part in relative_path.parts if part not in ("", ".")]
+                        if not parts or ".." in parts:
+                            continue
+                        destination = temp_root_path.joinpath(*parts)
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        with destination.open("wb") as handle:
+                            handle.write(payload)
+
+                    summary = import_gta3_audio(temp_root_path)
+            except AudioImportError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except Exception as exc:  # pragma: no cover - safety net
+                self.log_error("import upload failed: %s", exc)
+                self._send_json(500, {"error": "Unexpected import failure"})
+                return
+
+            self._send_json(200, {"summary": summary})
+
+        def _handle_import_start(self, parsed: Any | None = None) -> None:
+            if parsed is None:
+                parsed = urlparse(self.path)
+
+            if self.command == "GET":
+                params = parse_qs(parsed.query)
+            else:
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length > 0 else b""
+                params = {}
+                if raw:
+                    try:
+                        payload = json.loads(raw.decode("utf-8"))
+                        if isinstance(payload, dict):
+                            params = {key: [value] for key, value in payload.items() if isinstance(value, str)}
+                    except json.JSONDecodeError:
+                        self._send_json(400, {"error": "Invalid JSON payload"})
+                        return
+
+            gta_dir = params.get("gta3_dir") or params.get("gta3Dir")
+            if not gta_dir:
+                self._send_json(400, {"error": "Provide gta3_dir"})
+                return
+
+            path_value = gta_dir[0]
+            if not path_value:
+                self._send_json(400, {"error": "Empty gta3_dir value"})
+                return
+
+            try:
+                job = start_import_job(path_value)
+            except Exception as exc:  # pragma: no cover - defensive
+                self._send_json(500, {"error": f"Unable to start job: {exc}"})
+                return
+
+            self._send_json(202, {"job": job})
+
+        def _handle_import_status(self, parsed: Any) -> None:
+            params = parse_qs(parsed.query)
+            job_id_values = params.get("job") or params.get("id")
+            if not job_id_values:
+                self._send_json(400, {"error": "Missing job id"})
+                return
+            job_id = job_id_values[0]
+            job = _get_job(job_id)
+            if not job:
+                self._send_json(404, {"error": "Job not found"})
+                return
+            self._send_json(200, {"job": job})
+
+        def _handle_browse_directory(self) -> None:
+            try:
+                selection = browse_for_directory()
+            except RuntimeError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            except Exception as exc:  # pragma: no cover - safety net
+                self._send_json(500, {"error": f"Directory picker failed: {exc}"})
+                return
+
+            if not selection:
+                self._send_json(200, {"cancelled": True})
+            else:
+                self._send_json(200, {"path": selection, "cancelled": False})
+
+        def _send_json(self, status: int, data: Dict[str, Any]) -> None:
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+    return RequestHandler
+
+
+def run_server(bind: str, port: int, directory: pathlib.Path, *, verbose: bool = False) -> None:
+    handler = make_handler(directory, verbose=verbose)
+
+    class Server(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+
+    with Server((bind, port), handler) as httpd:
+        host, actual_port = httpd.server_address
+        print(f"Serving {directory} at http://{host or '127.0.0.1'}:{actual_port}")
+        print("Endpoints:")
+        print("  POST /api/import-gta3          -> JSON body {'gta3Dir': '<path>'}")
+        print("  POST /api/import-gta3-start    -> start async import job (JSON {'gta3_dir': '<path>'})")
+        print("  GET  /api/import-gta3-start    -> start async import job with query ?gta3_dir=")
+        print("  GET  /api/import-gta3-status   -> poll import job progress via ?job=<id>")
+        print("  POST /api/import-gta3-browse   -> open native folder picker (requires GUI)")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nStopping server...")
+
+
+def parse_args(argv: Any = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the GTARadio dev server with import endpoint.")
+    parser.add_argument("--bind", default="", help="Bind address (default: all interfaces)")
+    parser.add_argument("--port", type=int, default=4173, help="Port to listen on (default: 4173)")
+    parser.add_argument(
+        "--directory",
+        type=pathlib.Path,
+        default=pathlib.Path(__file__).resolve().parents[1] / "web",
+        help="Directory to serve (defaults to the web/ folder)",
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    return parser.parse_args(argv)
+
+
+def main(argv: Any = None) -> None:
+    args = parse_args(argv)
+    directory = args.directory.resolve()
+    if not directory.exists() or not directory.is_dir():
+        raise SystemExit(f"Directory does not exist: {directory}")
+    run_server(args.bind, args.port, directory, verbose=args.verbose)
+
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

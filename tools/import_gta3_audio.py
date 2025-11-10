@@ -10,11 +10,13 @@ import pathlib
 import shutil
 import subprocess
 import sys
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 STATIONS = ["HEAD", "CLASS", "KJAH", "RISE", "LIPS", "GAME", "MSX", "FLASH", "CHAT"]
 
 CACHE_FILE = "import-cache.json"
+
+VALID_EXTENSIONS = (".mp3", ".MP3", ".wav", ".WAV")
 
 
 class AudioImportError(RuntimeError):
@@ -31,14 +33,23 @@ def which_prog(candidates: Iterable[str]) -> Optional[str]:
 
 def find_src(audio_dir: pathlib.Path, stem_upper: str) -> Optional[pathlib.Path]:
     stem_lower = stem_upper.lower()
-    for ext in (".mp3", ".wav"):
+
+    for ext in VALID_EXTENSIONS:
         direct = audio_dir / f"{stem_upper}{ext}"
         if direct.exists():
             return direct
-    for ext in (".mp3", ".wav"):
-        for candidate in audio_dir.glob(f"*{ext}"):
+
+    try:
+        for candidate in audio_dir.iterdir():
+            if not candidate.is_file():
+                continue
+            if candidate.suffix.lower() not in (".mp3", ".wav"):
+                continue
             if candidate.stem.lower() == stem_lower:
                 return candidate
+    except OSError:
+        return None
+
     return None
 
 
@@ -51,7 +62,7 @@ def count_station_matches(directory: pathlib.Path) -> int:
         return 0
     count = 0
     for stem in STATIONS:
-        for ext in (".mp3", ".wav"):
+        for ext in VALID_EXTENSIONS:
             if (directory / f"{stem}{ext}").exists():
                 count += 1
                 break
@@ -131,11 +142,15 @@ def resolve_tool(preferred: Optional[str] = None) -> Optional[str]:
     return which_prog(["ffmpeg", "ffmpeg.exe"]) or which_prog(["avconv"])
 
 
+ProgressEvent = Dict[str, object]
+
+
 def import_gta3_audio(
     game_root: pathlib.Path,
     *,
     target_dir: Optional[pathlib.Path] = None,
     preferred_tool: Optional[str] = None,
+    progress_callback: Optional[Callable[[ProgressEvent], None]] = None,
 ) -> Dict[str, object]:
     game_root = pathlib.Path(game_root).expanduser()
     audio_dir, audio_matches = locate_audio_directory(game_root)
@@ -165,15 +180,34 @@ def import_gta3_audio(
         "audio_matches": audio_matches,
     }
 
-    for stem in STATIONS:
+    total = len(STATIONS)
+
+    for index, stem in enumerate(STATIONS, start=1):
         src = find_src(audio_dir, stem)
         record: Dict[str, object] = {
             "stem": stem,
             "status": "missing",
+            "index": index,
+            "total": total,
         }
         if not src:
             summary["missing"].append(stem)
             summary["details"].append(record)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "type": "station",
+                        "record": record.copy(),
+                        "summary": {
+                            "expected": summary["expected"],
+                            "found": summary["found"],
+                            "copied": summary["copied"],
+                            "converted": summary["converted"],
+                            "missing": list(summary["missing"]),
+                            "failures": list(summary["failures"]),
+                        },
+                    }
+                )
             continue
 
         summary["found"] += 1
@@ -182,25 +216,63 @@ def import_gta3_audio(
         record["destination"] = str(dst)
 
         if src.suffix.lower() == ".mp3":
-            shutil.copy2(src, dst)
-            record["status"] = "copied"
-            summary["copied"] += 1
-            summary["details"].append(record)
-            continue
-
-        code, logs = transcode_to_mp3(tool, src, dst)
-        if code == 0:
-            record["status"] = "converted"
-            summary["converted"] += 1
+            try:
+                if src.resolve() == dst.resolve():
+                    record["status"] = "copied"
+                else:
+                    shutil.copy2(src, dst)
+                    record["status"] = "copied"
+                summary["copied"] += 1
+            except shutil.SameFileError:
+                record["status"] = "copied"
+                summary["copied"] += 1
+            except OSError as exc:
+                record["status"] = "failed"
+                record["error"] = str(exc)
+                summary["failures"].append(stem)
+                try:
+                    if dst.exists():
+                        dst.unlink()
+                except OSError:
+                    pass
         else:
-            record["status"] = "failed"
-            record["exit_code"] = code
-            if logs:
-                record["logs"] = logs
-            summary["failures"].append(stem)
+            code, logs = transcode_to_mp3(tool, src, dst)
+            if code == 0:
+                record["status"] = "converted"
+                summary["converted"] += 1
+            else:
+                record["status"] = "failed"
+                record["exit_code"] = code
+                if logs:
+                    record["logs"] = logs
+                summary["failures"].append(stem)
+                try:
+                    if dst.exists():
+                        dst.unlink()
+                except OSError:
+                    pass
         summary["details"].append(record)
 
+        if progress_callback:
+            progress_callback(
+                {
+                    "type": "station",
+                    "record": record.copy(),
+                    "summary": {
+                        "expected": summary["expected"],
+                        "found": summary["found"],
+                        "copied": summary["copied"],
+                        "converted": summary["converted"],
+                        "missing": list(summary["missing"]),
+                        "failures": list(summary["failures"]),
+                    },
+                }
+            )
+
     write_import_cache(target_dir, summary)
+
+    if progress_callback:
+        progress_callback({"type": "complete", "summary": summary.copy()})
     return summary
 
 
@@ -221,8 +293,12 @@ def write_import_cache(target_dir: pathlib.Path, summary: Dict[str, object]) -> 
 
     cache_path = pathlib.Path(target_dir) / CACHE_FILE
     ensure_dir(cache_path.parent)
-    cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    summary["cache_file"] = str(cache_path)
+    try:
+        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        summary["cache_error"] = str(exc)
+    else:
+        summary["cache_file"] = str(cache_path)
 
 
 def format_summary(summary: Dict[str, object]) -> str:

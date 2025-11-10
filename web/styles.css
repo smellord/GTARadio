@@ -247,6 +247,29 @@ body {
   cursor: not-allowed;
 }
 
+#gta3-import-progress {
+  width: 100%;
+  height: 0.75rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(148, 163, 184, 0.2);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+#gta3-import-progress::-webkit-progress-bar {
+  background: transparent;
+}
+
+#gta3-import-progress::-webkit-progress-value {
+  background: linear-gradient(135deg, #22d3ee, #4ade80);
+  border-radius: 999px;
+}
+
+#gta3-import-progress::-moz-progress-bar {
+  background: linear-gradient(135deg, #22d3ee, #4ade80);
+  border-radius: 999px;
+}
+
 #import-feedback {
   margin: 0;
 }

@@ -5,7 +5,7 @@ This project is a proof-of-concept web application that emulates the Grand Theft
 ## Features
 
 - **Guided setup:** GTA III is available today; later entries are marked "coming soon". The interface walks you through ripping, converting, and loading each station.
-- **One-click importer:** Launch the included Python dev server, click **Browse…**, and point at your GTA III installation folder—the backend locates the Audio assets and copies/converts everything to MP3 automatically.
+- **One-click importer:** Launch the included Python dev server, click **Browse…**, and point at your GTA III installation folder—the backend locates the Audio assets and copies/converts everything to MP3 automatically with live progress updates.
 - **Cross-platform scripts:** Prefer the command line? Use the bundled Python/PowerShell/shell utilities to transcode Rockstar's IMA ADPCM assets to high-quality MP3 via `ffmpeg`.
 - **Missing file indicators:** Stations that are still waiting for their MP3s are greyed out with explicit filenames so you always know what to provide next.
 - **Real-time synchronisation:** The broadcast clock follows your real-world time-of-day. Switching stations or skipping forward/backward keeps every station aligned, just like the original engine.
@@ -26,7 +26,8 @@ This project is a proof-of-concept web application that emulates the Grand Theft
 ### Preparing your audio
 
 1. Rip each station (`HEAD.wav`, `CLASS.wav`, `FLASH.wav`, `KJAH.wav`, `LIPS.wav`, `RISE.wav`, `MSX.wav`, `CHAT.wav`, `GAME.wav`) from your own copy of GTA III.
-2. With `tools/serve.py` running, click **Browse…** in the importer, select the GTA III installation directory (the folder that contains the `Audio` subdirectory), and submit. The backend locates the WAV files automatically, then copies or converts each station into `web/sounds/gta/3/` as MP3.
+2. With `tools/serve.py` running, click **Browse…** in the importer, select the GTA III installation directory (the folder that contains the `Audio` subdirectory), and submit. The backend locates the WAV files automatically, then copies or converts each station into `web/sounds/gta/3/` as MP3 while the UI shows station-by-station progress.
+   > The Browse button opens a native folder picker via Tk. If you're running headless (e.g., SSH without a desktop), use the CLI importer instead.
 
    After a successful import, the directory structure will look like:
 
@@ -98,7 +99,7 @@ tools/
   import_gta3_audio.py   # Cross-platform importer (requires ffmpeg/avconv)
   import_gta3_audio.sh   # POSIX wrapper that prompts for the source path
   import_gta3_audio.ps1  # PowerShell wrapper that prompts for the source path
-  serve.py               # Dev server with /api/import-gta3 and /api/import-gta3-upload endpoints
+  serve.py               # Dev server with import APIs (/api/import-gta3-start, /api/import-gta3-status, /api/import-gta3-browse)
 ```
 
 
