@@ -4,22 +4,59 @@
 from __future__ import annotations
 
 import argparse
-import cgi
 import http.server
 import json
 import pathlib
-import shutil
 import socketserver
 import sys
 import tempfile
-from typing import Any, Dict
+from email.parser import BytesParser
+from email.policy import default as default_policy
+from typing import Any, Dict, List, Tuple
 
 from import_gta3_audio import AudioImportError, import_gta3_audio
 
 
+def parse_multipart_form_data(body: bytes, content_type: str) -> Tuple[List[Tuple[str, bytes]], Dict[str, str]]:
+    if "boundary=" not in content_type:
+        raise ValueError("Missing multipart boundary")
+
+    header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
+    parser = BytesParser(policy=default_policy)
+    message = parser.parsebytes(header + body)
+
+    if not message.is_multipart():
+        raise ValueError("Multipart payload expected")
+
+    files: List[Tuple[str, bytes]] = []
+    fields: Dict[str, str] = {}
+
+    for part in message.iter_parts():
+        disposition = part.get("Content-Disposition")
+        if not disposition:
+            continue
+
+        name = part.get_param("name", header="content-disposition")
+        filename = part.get_filename()
+        payload = part.get_payload(decode=True) or b""
+
+        if filename:
+            files.append((filename, payload))
+        elif name:
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                fields[name] = payload.decode(charset, errors="replace")
+            except LookupError:
+                fields[name] = payload.decode("utf-8", errors="replace")
+
+    return files, fields
+
+
 def make_handler(directory: pathlib.Path):
+    serve_directory = str(directory)
+
     class RequestHandler(http.server.SimpleHTTPRequestHandler):
-        directory = str(directory)
+        directory = serve_directory
         server_version = "GTARadioServer/1.0"
         protocol_version = "HTTP/1.1"
 
@@ -68,14 +105,24 @@ def make_handler(directory: pathlib.Path):
                 self._send_json(400, {"error": "Expected multipart/form-data"})
                 return
 
-            environ = {
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": content_type,
-                "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
-            }
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self._send_json(400, {"error": "Invalid Content-Length"})
+                return
 
-            form = cgi.FieldStorage(fp=self.rfile, headers=self.headers, environ=environ)
-            files = form.getlist("files") if isinstance(form, cgi.FieldStorage) else []
+            if length <= 0:
+                self._send_json(400, {"error": "Empty request body"})
+                return
+
+            body = self.rfile.read(length)
+
+            try:
+                files, _fields = parse_multipart_form_data(body, content_type)
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+
             if not files:
                 self._send_json(400, {"error": "No files uploaded"})
                 return
@@ -83,18 +130,18 @@ def make_handler(directory: pathlib.Path):
             try:
                 with tempfile.TemporaryDirectory(prefix="gta3-upload-") as temp_root:
                     temp_root_path = pathlib.Path(temp_root)
-                    for item in files:
-                        if not item.filename:
+                    for filename, payload in files:
+                        if not filename:
                             continue
-                        relative_path = pathlib.PurePosixPath(item.filename)
-                        if ".." in relative_path.parts:
+                        safe_name = filename.replace("\\", "/")
+                        relative_path = pathlib.PurePosixPath(safe_name)
+                        parts = [part for part in relative_path.parts if part not in ("", ".")]
+                        if not parts or ".." in parts:
                             continue
-                        destination = temp_root_path.joinpath(*relative_path.parts)
+                        destination = temp_root_path.joinpath(*parts)
                         destination.parent.mkdir(parents=True, exist_ok=True)
-                        if hasattr(item.file, "seek"):
-                            item.file.seek(0)
                         with destination.open("wb") as handle:
-                            shutil.copyfileobj(item.file, handle)
+                            handle.write(payload)
 
                     summary = import_gta3_audio(temp_root_path)
             except AudioImportError as exc:
