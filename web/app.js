@@ -52,6 +52,28 @@ const els = {
   player: document.getElementById("player"),
 };
 
+function resetLibraryState() {
+  for (const record of state.stations.values()) {
+    try {
+      record.audio.pause();
+      record.audio.src = "";
+    } catch (error) {
+      console.warn("Unable to pause audio during reset", error);
+    }
+    if (record.objectUrl) {
+      try {
+        URL.revokeObjectURL(record.objectUrl);
+      } catch (revokeError) {
+        console.warn("Failed to revoke object URL", revokeError);
+      }
+    }
+  }
+  state.stations.clear();
+  state.currentStationId = null;
+  updateNowPlaying();
+  updatePlayerControls();
+}
+
 function getStationMp3Name(station) {
   return station.mp3Name;
 }
@@ -152,6 +174,7 @@ function renderGameSelection() {
 function selectGame(gameId) {
   const game = GAMES.find((g) => g.id === gameId);
   if (!game || game.status !== "available") return;
+  resetLibraryState();
   state.selectedGame = game;
   localStorage.setItem(STORAGE_KEYS.LAST_GAME, game.id);
   renderStationManager();
@@ -288,6 +311,7 @@ async function scanLocalLibrary(folderPath) {
 
   const folderDisplay = folderPath ? `${folderPath}/` : "the expected folder";
   const folderForPaths = folderPath ? `${folderPath}/` : null;
+  let removedActive = false;
 
   for (const station of state.selectedGame.stations) {
     const expectedHtml = folderForPaths
@@ -302,28 +326,28 @@ async function scanLocalLibrary(folderPath) {
       await loadStationFromLibrary(station, folderPath);
     } catch (error) {
       console.warn(`Failed to load ${station.mp3Name} from library`, error);
-      const fallback = describeRecord(station.id);
-      if (fallback) {
-        updateStationStatus(station.id, "valid", fallback);
-      } else {
-        const expected = folderForPaths
-          ? describeExpectedFilePathsHtml(station, folderForPaths)
-          : describeExpectedFileHtml(station);
-        const guidance = folderPath
-          ? `File ${expected} is missing or unreadable.`
-          : `Use the importer above to provide ${expected}.`;
-        const details = error instanceof Error ? error.message : "Unknown error";
-        updateStationStatus(
-          station.id,
-          "error",
-          `${guidance}<br />Reason: ${details}`
-        );
-      }
+      const wasCurrent = clearStationRecord(station.id);
+      removedActive = removedActive || wasCurrent;
+      const expected = folderForPaths
+        ? describeExpectedFilePathsHtml(station, folderForPaths)
+        : describeExpectedFileHtml(station);
+      const guidance = folderPath
+        ? `File ${expected} is missing or unreadable.`
+        : `Use the importer above to provide ${expected}.`;
+      const details = error instanceof Error ? escapeHtml(error.message) : "Unknown error";
+      updateStationStatus(
+        station.id,
+        "error",
+        `${guidance}<br />Reason: ${details}`
+      );
     }
   }
 
   updateStationSelector();
   updatePlayerControls();
+  if (removedActive) {
+    updateNowPlaying();
+  }
 }
 
 async function onImportSubmit(event, folderPath) {
@@ -436,6 +460,9 @@ function formatImportSummary(summary) {
   }
   if (summary.cache_file) {
     parts.push(`Cache: <code>${escapeHtml(summary.cache_file)}</code>`);
+  }
+  if (summary.cache_error) {
+    parts.push(`Cache error: ${escapeHtml(summary.cache_error)}`);
   }
   if (summary.missing && summary.missing.length) {
     parts.push(`Missing: ${summary.missing.map((stem) => `<code>${escapeHtml(stem)}</code>`).join(", ")}`);
@@ -627,6 +654,7 @@ function setStationRecord(stationId, record) {
 
   if (previous?.audio) {
     previous.audio.pause();
+    previous.audio.src = "";
   }
   if (previous?.objectUrl && previous.objectUrl !== record.objectUrl) {
     URL.revokeObjectURL(previous.objectUrl);
@@ -634,6 +662,32 @@ function setStationRecord(stationId, record) {
 
   state.stations.set(stationId, record);
   return { wasCurrent, wasPlaying };
+}
+
+function clearStationRecord(stationId) {
+  const record = state.stations.get(stationId);
+  if (!record) return false;
+
+  try {
+    record.audio.pause();
+    record.audio.src = "";
+  } catch (error) {
+    console.warn("Unable to pause audio for station", stationId, error);
+  }
+  if (record.objectUrl) {
+    try {
+      URL.revokeObjectURL(record.objectUrl);
+    } catch (revokeError) {
+      console.warn("Failed to revoke object URL", revokeError);
+    }
+  }
+
+  state.stations.delete(stationId);
+  const wasCurrent = state.currentStationId === stationId;
+  if (wasCurrent) {
+    state.currentStationId = null;
+  }
+  return wasCurrent;
 }
 
 function updateOffsetReadout() {
