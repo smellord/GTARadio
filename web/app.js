@@ -328,56 +328,43 @@ async function scanLocalLibrary(folderPath) {
 
 async function onImportSubmit(event, folderPath) {
   event.preventDefault();
-  const importElements = state.importElements;
-  if (!importElements) return;
+  const { input, submit, feedback } = state.importElements || {};
+  if (!input || !submit || !feedback) return;
 
-  const { submit, feedback, picker, input } = importElements;
-  if (!submit || !feedback) return;
-
-  if (!state.importSelection || state.importSelection.length === 0) {
+  const gtaPath = (input.value || "").trim();
+  if (!gtaPath) {
     feedback.dataset.state = "error";
-    feedback.innerHTML = "Browse to your GTA III game directory before importing.";
+    feedback.innerHTML = "No folder path. Select your GTA III installation folder first.";
     return;
-  }
-
-  const formData = buildImportFormData(state.importSelection);
-  if (state.importDirectoryLabel) {
-    formData.append("label", state.importDirectoryLabel);
   }
 
   feedback.dataset.state = "pending";
-  feedback.innerHTML = "Uploading and converting audio…";
+  feedback.innerHTML = "Importing from local GTA directory…";
   submit.disabled = true;
 
-  let payload;
   try {
-    payload = await requestServerUpload(formData);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Import failed.";
+    const res = await fetch("/api/import-gta3-upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gta3_dir: gtaPath }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+
+    feedback.dataset.state = "valid";
+    feedback.innerHTML = "Import complete! Reloading…";
+
+    // optional cache refresh hooks in your app:
+    if (typeof scanLocalLibrary === "function") await scanLocalLibrary(folderPath);
+    if (typeof loadImportCache === "function") await loadImportCache(folderPath, { force: true });
+
+    setTimeout(() => location.reload(), 600);
+  } catch (err) {
     feedback.dataset.state = "error";
-    feedback.innerHTML = escapeHtml(message);
+    feedback.innerHTML = `Import failed: ${err instanceof Error ? err.message : String(err)}`;
     submit.disabled = false;
-    return;
   }
-
-  const summary = payload?.summary || {};
-  const message = formatImportSummary(summary);
-  const hasIssues = (summary.missing && summary.missing.length) || (summary.failures && summary.failures.length);
-  feedback.dataset.state = hasIssues ? "error" : "valid";
-  feedback.innerHTML = message;
-
-  if (picker) {
-    picker.value = "";
-  }
-  state.importSelection = [];
-  submit.disabled = true;
-  if (input && state.importDirectoryLabel) {
-    input.value = state.importDirectoryLabel;
-  }
-
-  await scanLocalLibrary(folderPath);
-  await loadImportCache(folderPath, { force: true });
 }
+
 
 async function requestServerUpload(formData) {
   let response;
@@ -502,7 +489,7 @@ function onDirectoryPicked(event) {
   const label = deriveDirectoryLabel(audioFiles.length ? audioFiles : files);
   state.importDirectoryLabel = label;
   if (input) {
-    input.value = label || (audioFiles.length ? `${audioFiles.length} files selected` : files[0].name);
+    input.value = label;
   }
 
   if (!audioFiles.length) {
