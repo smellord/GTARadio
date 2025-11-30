@@ -12,6 +12,9 @@ const playerEls = {
   skipForward: null,
 };
 
+const MIN_SEEK_INTERVAL_MS = 5000;
+const DRIFT_THRESHOLD_SECONDS = 2.5;
+
 function getBroadcastPosition(duration) {
   // Map wall-clock time into the station loop length. Offset is user-controlled
   // (e.g., for manual alignment tweaks) and persisted across sessions.
@@ -44,6 +47,12 @@ export function syncActiveStation(game, autoPlay = false) {
   if (!record) return;
   if (!isFinite(record.duration) || record.duration <= 0) return;
 
+  const now = performance.now();
+  if (record.lastSeek && now - record.lastSeek < MIN_SEEK_INTERVAL_MS) {
+    updateNowPlayingLabel(game);
+    return;
+  }
+
   const target = getBroadcastPosition(record.duration);
   const audio = record.audio;
   const current = audio.currentTime || 0;
@@ -52,11 +61,12 @@ export function syncActiveStation(game, autoPlay = false) {
   // Seek only when necessary to prevent the sub-second looping/glitching the
   // user reported. Keeping the seek threshold above a couple seconds allows
   // the player to run naturally while still re-aligning to the broadcast clock.
-  const shouldSeek = !record.synced || drift > 3 || audio.paused;
+  const shouldSeek = !record.synced || drift > DRIFT_THRESHOLD_SECONDS || audio.paused;
   if (shouldSeek) {
     try {
       audio.currentTime = target;
       record.synced = true;
+      record.lastSeek = now;
     } catch (error) {
       console.warn('Failed to seek station', state.currentStationId, error);
     }
@@ -169,6 +179,7 @@ export function selectStation(stationId, game) {
   }
   state.currentStationId = stationId;
   record.synced = false; // Force an initial seek on the next sync.
+  record.lastSeek = 0;
   syncActiveStation(game, true);
   updateControls(game);
   updateStationSelector(game, () => selectStation(stationId, game));
@@ -184,6 +195,7 @@ export function setStationRecord(stationId, record) {
     URL.revokeObjectURL(previous.objectUrl);
   }
   record.synced = false;
+  record.lastSeek = 0;
   state.stations.set(stationId, record);
 }
 
