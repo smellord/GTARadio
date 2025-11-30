@@ -210,7 +210,13 @@ function renderStationManager() {
       <form id="gta3-import-form" class="importer__form">
         <label class="importer__label" for="gta3-import-path">GTA III game directory</label>
         <div class="importer__row importer__row--actions">
-          <input id="gta3-import-path" type="text" placeholder="Select your GTA III folder" autocomplete="off" readonly />
+          <input
+            id="gta3-import-path"
+            type="text"
+            placeholder="Select your GTA III folder"
+            autocomplete="off"
+            spellcheck="false"
+          />
           <div class="importer__buttons">
             <button type="button" id="gta3-import-browse">Browse…</button>
             <button type="submit" id="gta3-import-submit" disabled>Import and convert</button>
@@ -255,6 +261,11 @@ function renderStationManager() {
   };
 
   importForm?.addEventListener("submit", (event) => onImportSubmit(event, folderPath));
+
+  importInput?.addEventListener("input", (event) => {
+    const value = event.target?.value || "";
+    setImportPath(value.trim());
+  });
 
   browseButton?.addEventListener("click", async () => {
     await requestDirectorySelection();
@@ -525,7 +536,16 @@ async function startImportJob(directoryPath) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = payload?.error || `Import start failed with HTTP ${response.status}`;
-    throw new Error(message);
+    // Fallback to query-string GET for environments where POST may be blocked.
+    const fallback = await fetch(
+      `${IMPORT_START_ENDPOINT}?gta3_dir=${encodeURIComponent(directoryPath)}&v=${Date.now()}`,
+      { cache: "no-store" }
+    );
+    if (!fallback.ok) {
+      throw new Error(message);
+    }
+    const fallbackPayload = await fallback.json();
+    return fallbackPayload.job || fallbackPayload;
   }
   return payload.job || payload;
 }
@@ -928,7 +948,10 @@ function syncActiveStation(autoPlay = false) {
   const total = record.duration;
   if (!isFinite(total) || total <= 0) return;
   const target = ((now + state.offsetSeconds) % total + total) % total;
-  record.audio.currentTime = target;
+  const drift = Math.abs(record.audio.currentTime - target);
+  if (!isFinite(record.audio.currentTime) || drift > 1) {
+    record.audio.currentTime = target;
+  }
   if (autoPlay) {
     record.audio.play().catch((error) => console.warn("Playback failed", error));
   }
@@ -1001,9 +1024,7 @@ function isPlaying() {
 function startTick() {
   stopTick();
   state.tickHandle = window.setInterval(() => {
-    if (isPlaying()) {
-      updateNowPlaying();
-    }
+    syncActiveStation();
   }, 1000);
 }
 
@@ -1030,6 +1051,8 @@ function init() {
   const lastGame = localStorage.getItem(STORAGE_KEYS.LAST_GAME);
   if (lastGame) {
     selectGame(lastGame);
+  } else {
+    selectGame("gta3");
   }
 }
 

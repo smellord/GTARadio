@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import uuid
+import webbrowser
 from email.parser import BytesParser
 from email.policy import default as default_policy
 from typing import Any, Dict, List, Tuple
@@ -227,6 +228,10 @@ def make_handler(directory: pathlib.Path, *, verbose: bool = False):
             if parsed.path == "/api/import-gta3-browse":
                 self._handle_browse_directory()
                 return
+            if parsed.path == "/api/import-gta3-upload":
+                # Permit query-string driven imports for browser address bar usage.
+                self._handle_upload_import(parsed)
+                return
 
             super().do_GET()
 
@@ -272,10 +277,29 @@ def make_handler(directory: pathlib.Path, *, verbose: bool = False):
 
             self._send_json(200, {"summary": summary})
 
-        def _handle_upload_import(self) -> None:
+        def _handle_upload_import(self, parsed: Any | None = None) -> None:
+            if parsed is None:
+                parsed = urlparse(self.path)
+
+            params = parse_qs(parsed.query)
+            gta_dir_param = params.get("gta3_dir") or params.get("gta3Dir")
+            if gta_dir_param:
+                try:
+                    summary = import_gta3_audio(gta_dir_param[0])
+                except AudioImportError as exc:
+                    self._send_json(400, {"error": str(exc)})
+                    return
+                except Exception as exc:  # pragma: no cover - safety net
+                    self.log_error("import upload failed: %s", exc)
+                    self._send_json(500, {"error": "Unexpected import failure"})
+                    return
+
+                self._send_json(200, {"summary": summary})
+                return
+
             content_type = self.headers.get("Content-Type", "")
             if "multipart/form-data" not in content_type:
-                self._send_json(400, {"error": "Expected multipart/form-data"})
+                self._send_json(400, {"error": "Expected multipart/form-data or gta3_dir"})
                 return
 
             try:
@@ -404,7 +428,14 @@ def make_handler(directory: pathlib.Path, *, verbose: bool = False):
     return RequestHandler
 
 
-def run_server(bind: str, port: int, directory: pathlib.Path, *, verbose: bool = False) -> None:
+def run_server(
+    bind: str,
+    port: int,
+    directory: pathlib.Path,
+    *,
+    verbose: bool = False,
+    open_browser: bool = True,
+) -> None:
     handler = make_handler(directory, verbose=verbose)
 
     class Server(socketserver.ThreadingTCPServer):
@@ -412,13 +443,21 @@ def run_server(bind: str, port: int, directory: pathlib.Path, *, verbose: bool =
 
     with Server((bind, port), handler) as httpd:
         host, actual_port = httpd.server_address
-        print(f"Serving {directory} at http://{host or '127.0.0.1'}:{actual_port}")
+        url = f"http://{host or '127.0.0.1'}:{actual_port}"
+        print(f"Serving {directory} at {url}")
         print("Endpoints:")
         print("  POST /api/import-gta3          -> JSON body {'gta3Dir': '<path>'}")
         print("  POST /api/import-gta3-start    -> start async import job (JSON {'gta3_dir': '<path>'})")
         print("  GET  /api/import-gta3-start    -> start async import job with query ?gta3_dir=")
         print("  GET  /api/import-gta3-status   -> poll import job progress via ?job=<id>")
         print("  POST /api/import-gta3-browse   -> open native folder picker (requires GUI)")
+        print("  GET  /api/import-gta3-upload   -> immediate import via ?gta3_dir=<path> (no upload)")
+
+        if open_browser:
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
@@ -436,6 +475,7 @@ def parse_args(argv: Any = None) -> argparse.Namespace:
         help="Directory to serve (defaults to the web/ folder)",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--no-open", action="store_true", help="Do not launch a browser tab automatically")
     return parser.parse_args(argv)
 
 
@@ -444,7 +484,7 @@ def main(argv: Any = None) -> None:
     directory = args.directory.resolve()
     if not directory.exists() or not directory.is_dir():
         raise SystemExit(f"Directory does not exist: {directory}")
-    run_server(args.bind, args.port, directory, verbose=args.verbose)
+    run_server(args.bind, args.port, directory, verbose=args.verbose, open_browser=not args.no_open)
 
 
 if __name__ == "__main__":
