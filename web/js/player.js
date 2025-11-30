@@ -1,4 +1,6 @@
 // Playback and clock synchronisation helpers.
+// We keep each station aligned to a shared broadcast clock derived from
+// real-world time to mimic GTA's "always playing" behaviour.
 import { GAME_LIBRARY_FOLDERS, state, nowSeconds, formatDuration, saveOffset } from './state.js';
 
 const playerEls = {
@@ -11,6 +13,8 @@ const playerEls = {
 };
 
 function getBroadcastPosition(duration) {
+  // Map wall-clock time into the station loop length. Offset is user-controlled
+  // (e.g., for manual alignment tweaks) and persisted across sessions.
   const daySeconds = nowSeconds();
   return ((daySeconds + state.offsetSeconds) % duration + duration) % duration;
 }
@@ -41,15 +45,32 @@ export function syncActiveStation(game, autoPlay = false) {
   if (!isFinite(record.duration) || record.duration <= 0) return;
 
   const target = getBroadcastPosition(record.duration);
-  const drift = Math.abs(record.audio.currentTime - target);
-  // Only seek when the drift is noticeable or when paused, to avoid 1s looping.
-  // This keeps the "always playing" illusion without constantly resetting playback.
-  if (!isFinite(record.audio.currentTime) || drift > 2 || record.audio.paused) {
-    record.audio.currentTime = target;
+  const audio = record.audio;
+  const current = audio.currentTime || 0;
+  const drift = Math.abs(current - target);
+
+  // Seek only when necessary to prevent the sub-second looping/glitching the
+  // user reported. Keeping the seek threshold above a couple seconds allows
+  // the player to run naturally while still re-aligning to the broadcast clock.
+  const shouldSeek = !record.synced || drift > 3 || audio.paused;
+  if (shouldSeek) {
+    try {
+      audio.currentTime = target;
+      record.synced = true;
+    } catch (error) {
+      console.warn('Failed to seek station', state.currentStationId, error);
+    }
   }
-  if (autoPlay && record.audio.paused) {
-    record.audio.play().catch((error) => console.warn('Playback failed', error));
+
+  if (autoPlay && audio.paused) {
+    audio
+      .play()
+      .then(() => {
+        record.synced = true;
+      })
+      .catch((error) => console.warn('Playback failed', error));
   }
+
   updateNowPlayingLabel(game);
 }
 
@@ -147,6 +168,7 @@ export function selectStation(stationId, game) {
     prev?.audio.pause();
   }
   state.currentStationId = stationId;
+  record.synced = false; // Force an initial seek on the next sync.
   syncActiveStation(game, true);
   updateControls(game);
   updateStationSelector(game, () => selectStation(stationId, game));
@@ -161,6 +183,7 @@ export function setStationRecord(stationId, record) {
   if (previous?.objectUrl && previous.objectUrl !== record.objectUrl) {
     URL.revokeObjectURL(previous.objectUrl);
   }
+  record.synced = false;
   state.stations.set(stationId, record);
 }
 

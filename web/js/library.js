@@ -82,6 +82,12 @@ export async function loadStationFromLibrary(station, folderPath) {
   };
 }
 
+export async function scanSingleStation(station, folderPath) {
+  // Load one station from disk and return its record. Consumers can decide how
+  // to surface status text or handle missing files.
+  return loadStationFromLibrary(station, folderPath);
+}
+
 export async function scanLibrary(game, folderPath, onStatus) {
   const records = new Map();
   for (const station of game.stations) {

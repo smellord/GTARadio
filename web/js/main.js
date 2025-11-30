@@ -1,8 +1,8 @@
-import { GAMES, state, resetLibraryState, saveOffset, formatClock } from './state.js';
+import { GAMES, state, resetLibraryState, saveOffset, formatClock, formatDuration } from './state.js';
 import {
   describeExpectedFilePathsPlain,
   getLibraryFolder,
-  scanLibrary,
+  scanSingleStation,
 } from './library.js';
 import {
   renderPlayer,
@@ -27,6 +27,10 @@ const els = {
   stationManager: document.getElementById('station-manager'),
   player: document.getElementById('player'),
 };
+
+function findStationByStem(game, stem) {
+  return game?.stations.find((station) => station.stem === stem) || null;
+}
 
 function renderGameSelection() {
   const lastGame = localStorage.getItem('gta-radio-last-game');
@@ -78,37 +82,54 @@ function selectGame(gameId) {
   attachAutoStartFromQuery(game.id);
 }
 
-async function refreshLibrary() {
+async function refreshLibrary(targetStems = null) {
+  // Reload station metadata without tearing down playback. If targetStems is
+  // provided, only refresh those stations (used when imports finish one-by-one).
   if (!state.selectedGame) return;
   const game = state.selectedGame;
   const folderPath = getLibraryFolder(game.id);
   const list = els.stationManager.querySelector('.station-list');
+  const stationsToLoad = targetStems
+    ? game.stations.filter((s) => targetStems.includes(s.stem))
+    : game.stations;
+
   if (list) {
-    list.querySelectorAll('.station-status').forEach((el) => {
-      el.dataset.state = 'pending';
-      el.textContent = 'Checking…';
+    stationsToLoad.forEach((station) => {
+      const statusEl = list.querySelector(`.station-item[data-station-id="${station.id}"] .station-status`);
+      if (statusEl) {
+        statusEl.dataset.state = 'pending';
+        statusEl.textContent = 'Checking…';
+      }
     });
   }
-  for (const station of game.stations) {
-    clearStationRecord(station.id);
-  }
-  try {
-    // Load each station serially so we can surface clear status text per file.
-    const records = await scanLibrary(game, folderPath, ({ station, state: stateKey, message }) => {
-      updateStationStatus(station.id, stateKey, message);
-    });
-    for (const [stationId, record] of records) {
-      setStationRecord(stationId, record);
+
+  for (const station of stationsToLoad) {
+    try {
+      const record = await scanSingleStation(station, folderPath);
+      setStationRecord(station.id, record);
+      updateStationStatus(
+        station.id,
+        'valid',
+        `Loaded ${describeExpectedFilePathsPlain(station, folderPath)} (${formatDuration(record.duration)})`,
+      );
+      if (!state.currentStationId) {
+        selectStation(station.id, game);
+      } else if (state.currentStationId === station.id) {
+        syncActiveStation(game, true);
+      }
+    } catch (error) {
+      updateStationStatus(station.id, 'missing', `Missing ${describeExpectedFilePathsPlain(station, folderPath)}`);
+      // If the currently-selected station vanished, drop selection so the user
+      // can pick another without forced resets to the first station.
+      if (state.currentStationId === station.id) {
+        state.currentStationId = null;
+      }
+      clearStationRecord(station.id);
     }
-    if (!state.currentStationId) {
-      const firstReady = game.stations.find((s) => state.stations.has(s.id));
-      if (firstReady) selectStation(firstReady.id, game);
-    }
-    updateStationSelector(game, (stationId) => selectStation(stationId, game));
-    syncActiveStation(game, true);
-  } catch (error) {
-    console.error('Library scan failed', error);
   }
+
+  updateStationSelector(game, (stationId) => selectStation(stationId, game));
+  syncActiveStation(game);
 }
 
 function renderStationManager() {
@@ -220,7 +241,14 @@ function updateStationStatus(stationId, stateKey, message) {
   }
 }
 
-window.addEventListener('station-ready', () => refreshLibrary());
+window.addEventListener('station-ready', (event) => {
+  if (!state.selectedGame) return;
+  const stem = event.detail?.stem;
+  const station = findStationByStem(state.selectedGame, stem);
+  if (station) {
+    refreshLibrary([station.stem]);
+  }
+});
 
 renderGameSelection();
 const lastGame = localStorage.getItem('gta-radio-last-game');
