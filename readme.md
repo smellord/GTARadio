@@ -51,7 +51,7 @@ This project is a proof-of-concept web application that emulates the Grand Theft
 
 ### Import GTA III Audio (MP3)
 
-The recommended workflow is to run `python tools/serve.py`, open the app, and use the importer to select your GTA III installation directory. The backend locates Rockstar's IMA ADPCM WAVs inside the `Audio` subfolder, converts them to high-quality MP3 (44.1 kHz stereo, `-q:a 2`), and stores them inside `web/sounds/gta/3/` with the canonical uppercase filenames. The browser then plays only those MP3 files. Every successful import also writes `web/sounds/gta/3/import-cache.json`, and the UI surfaces that summary for quick confirmation. If the GUI picker fails, you can paste your path and the importer will make the same `GET /api/import-gta3-start?gta3_dir=<path>` request the server accepts from the address bar.
+The recommended workflow is to run `python tools/serve.py`, open the app, and use the importer to select your GTA III installation directory. The backend locates Rockstar's IMA ADPCM WAVs inside the `Audio` subfolder, converts them to high-quality MP3 (44.1 kHz stereo, `-q:a 2`), and stores them inside `web/sounds/gta/3/` with the canonical uppercase filenames. The browser then plays only those MP3 files. If the GUI picker fails, you can paste your path and the importer will make the same `GET /api/import-gta3-start?gta3_dir=<path>` request the server accepts from the address bar. Existing MP3s are left untouched so you can rerun imports safely.
 
 Need automation or CI integration? The same logic is exposed via `tools/import_gta3_audio.py`:
 

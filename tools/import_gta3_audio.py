@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
 import json
 import pathlib
 import shutil
@@ -13,8 +12,6 @@ import sys
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 STATIONS = ["HEAD", "CLASS", "KJAH", "RISE", "LIPS", "GAME", "MSX", "FLASH", "CHAT"]
-
-CACHE_FILE = "import-cache.json"
 
 VALID_EXTENSIONS = (".mp3", ".MP3", ".wav", ".WAV")
 
@@ -170,6 +167,7 @@ def import_gta3_audio(
         "found": 0,
         "copied": 0,
         "converted": 0,
+        "skipped": 0,
         "missing": [],
         "failures": [],
         "details": [],
@@ -214,6 +212,27 @@ def import_gta3_audio(
         dst = target_dir / f"{stem}.mp3"
         record["source"] = str(src)
         record["destination"] = str(dst)
+
+        if dst.exists():
+            record["status"] = "skipped"
+            summary["skipped"] += 1
+            summary["details"].append(record)
+            if progress_callback:
+                progress_callback(
+                    {
+                        "type": "station",
+                        "record": record.copy(),
+                        "summary": {
+                            "expected": summary["expected"],
+                            "found": summary["found"],
+                            "copied": summary["copied"],
+                            "converted": summary["converted"],
+                            "missing": list(summary["missing"]),
+                            "failures": list(summary["failures"]),
+                        },
+                    }
+                )
+            continue
 
         if src.suffix.lower() == ".mp3":
             try:
@@ -269,36 +288,9 @@ def import_gta3_audio(
                 }
             )
 
-    write_import_cache(target_dir, summary)
-
     if progress_callback:
         progress_callback({"type": "complete", "summary": summary.copy()})
     return summary
-
-
-def write_import_cache(target_dir: pathlib.Path, summary: Dict[str, object]) -> None:
-    payload = {
-        "generated_at": _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-        "source_root": summary.get("source_root"),
-        "audio_dir": summary.get("audio_dir"),
-        "tool": summary.get("tool"),
-        "expected": summary.get("expected"),
-        "found": summary.get("found"),
-        "copied": summary.get("copied"),
-        "converted": summary.get("converted"),
-        "missing": summary.get("missing"),
-        "failures": summary.get("failures"),
-        "details": summary.get("details"),
-    }
-
-    cache_path = pathlib.Path(target_dir) / CACHE_FILE
-    ensure_dir(cache_path.parent)
-    try:
-        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    except OSError as exc:
-        summary["cache_error"] = str(exc)
-    else:
-        summary["cache_file"] = str(cache_path)
 
 
 def format_summary(summary: Dict[str, object]) -> str:
@@ -307,6 +299,7 @@ def format_summary(summary: Dict[str, object]) -> str:
         f"Found:      {summary['found']}",
         f"Copied:     {summary['copied']}",
         f"Transcoded: {summary['converted']}",
+        f"Skipped:    {summary.get('skipped', 0)}",
         f"Target dir: {summary['target']}",
         f"Tool:       {summary['tool']}",
         f"Source dir: {summary.get('source_root', 'unknown')}",

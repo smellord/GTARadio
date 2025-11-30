@@ -110,6 +110,12 @@ def browse_for_directory(initial: str | None = None) -> str | None:
     root = tkinter.Tk()
     root.withdraw()
     try:
+        root.lift()
+        root.attributes('-topmost', True)
+        root.after(200, lambda: root.attributes('-topmost', False))
+    except Exception:
+        pass
+    try:
         root.update()
     except Exception:
         pass
@@ -443,7 +449,8 @@ def run_server(
 
     with Server((bind, port), handler) as httpd:
         host, actual_port = httpd.server_address
-        url = f"http://{host or '127.0.0.1'}:{actual_port}"
+        display_host = '127.0.0.1' if host in ('', '0.0.0.0') else host
+        url = f"http://{display_host}:{actual_port}"
         print(f"Serving {directory} at {url}")
         print("Endpoints:")
         print("  POST /api/import-gta3          -> JSON body {'gta3Dir': '<path>'}")
@@ -466,7 +473,7 @@ def run_server(
 
 def parse_args(argv: Any = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the GTARadio dev server with import endpoint.")
-    parser.add_argument("--bind", default="", help="Bind address (default: all interfaces)")
+    parser.add_argument("--bind", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=4173, help="Port to listen on (default: 4173)")
     parser.add_argument(
         "--directory",
